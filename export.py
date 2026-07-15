@@ -65,6 +65,7 @@ RAW_COLUMNS: list[str] = [
     'pending',
     'institution',
     'last_updated',
+    'excluded',
 ]
 
 
@@ -142,13 +143,16 @@ def export_cash_flow(
     Returns:
         Number of rows written (or that would have been written in dry run).
     """
-    if not transactions:
+    # Filter out excluded transactions before export
+    active_transactions = [t for t in transactions if not t.get('excluded')]
+    
+    if not active_transactions:
         logger.warning(
-            "export_cash_flow: received empty transaction list — skipping export."
+            "export_cash_flow: received empty transaction list after filtering excluded — skipping export."
         )
         return 0
 
-    rows = [_to_cash_flow_row(t) for t in transactions]
+    rows = [_to_cash_flow_row(t) for t in active_transactions]
 
     if dry_run:
         logger.info(

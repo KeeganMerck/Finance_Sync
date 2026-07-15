@@ -65,9 +65,11 @@ VALID_MATCH_FIELDS = {
     'merchant',
     'description',
     'institution',
+    'account',
     'plaid_category',
     'plaid_category_primary',
     'day_of_month',  # extracts day from date (YYYY-MM-DD), 2-digit zero-padded
+    'amount',  # numeric amount for threshold matching (pattern like ">2000" or "<-100")
 }
 
 # Supported compound match fields use ' AND ' between simple field names.
@@ -139,7 +141,7 @@ def load_rules(rules_path: Path = RULES_CSV_PATH) -> list[CategoryRule]:
 
             # Skip blank or malformed rows, including comment lines that may be
             # present in the CSV for documentation.
-            if not match_type or not pattern or match_type.startswith('#') or pattern.startswith('#'):
+            if not match_type or not pattern or match_type.startswith('#') or pattern.startswith('#') or match_field.startswith('#'):
                 logger.debug(f"Skipping empty/invalid rule at CSV row {line_num}")
                 continue
 
@@ -155,9 +157,10 @@ def load_rules(rules_path: Path = RULES_CSV_PATH) -> list[CategoryRule]:
                 if not all(part in VALID_MATCH_FIELDS for part in parts):
                     logger.warning(
                         f"Row {line_num}: unknown compound match_field '{match_field}' — "
-                        f"expected fields in {VALID_MATCH_FIELDS}. Defaulting to 'any'."
+                        f"expected fields in {VALID_MATCH_FIELDS}. Invalid parts: {[p for p in parts if p not in VALID_MATCH_FIELDS]}. Defaulting to 'any'."
                     )
                     match_field = 'any'
+                # If all parts are valid, match_field is already set correctly (compound form)
             elif match_field not in VALID_MATCH_FIELDS:
                 logger.warning(
                     f"Row {line_num}: unknown match_field '{match_field}' — "
@@ -191,11 +194,15 @@ def _get_field_value(field_name: str, transaction: dict) -> str:
             return date_str[8:10]
         return ''
 
+    if field_name == 'amount':
+        return str(transaction.get('amount', 0))
+
     field_map = {
-        'any': (transaction.get('merchant') or '') + ' ' + (transaction.get('description') or ''),
+        'any': (transaction.get('merchant') or '') + ' ' + (transaction.get('description') or '') + ' ' + (transaction.get('account') or ''),
         'merchant': transaction.get('merchant') or '',
         'description': transaction.get('description') or '',
         'institution': transaction.get('institution') or '',
+        'account': transaction.get('account') or '',
         'plaid_category': transaction.get('plaid_category') or '',
         'plaid_category_primary': transaction.get('plaid_category_primary') or '',
     }
@@ -210,6 +217,9 @@ def _get_match_targets(rule: CategoryRule, transaction: dict) -> tuple[tuple[str
     The matcher treats simple rules as one component and "any" as a component
     with merchant and description alternatives. Compound rules are evaluated as
     multiple components joined by AND semantics.
+    
+    For compound patterns (pattern contains '|'), each alternative corresponds to
+    each field in the compound match_field.
     """
     if COMPOUND_MATCH_FIELD_SEPARATOR in rule.match_field:
         parts = [part.strip().lower() for part in rule.match_field.split(COMPOUND_MATCH_FIELD_SEPARATOR)]
@@ -224,13 +234,54 @@ def _get_match_targets(rule: CategoryRule, transaction: dict) -> tuple[tuple[str
 
 
 def _pattern_matches(pattern: str, value: str, match_type: str) -> bool:
-    """Match a pattern against a single field value, supporting pipe-delimited alternatives."""
+    """Match a pattern against a single field value, supporting pipe-delimited alternatives.
+    
+    For amount field, supports comparison operators: >, <, >=, <=, ==
+    Example: ">2000" matches amounts greater than 2000
+    
+    For compound patterns with pipe-delimited field:value pairs, handles each part separately.
+    Example: "Publix|<-2000" splits into "Publix" and "<-2000"
+    """
     if not pattern:
         return False
 
     alternatives = [segment.strip().upper() for segment in pattern.split('|') if segment.strip()]
     if not alternatives:
         return False
+
+    # Check if this is an amount comparison (starts with comparison operator)
+    if pattern.startswith(('>', '<', '=', '!')):
+        try:
+            amount = float(value)
+            # Handle each alternative
+            for alt in alternatives:
+                if alt.startswith('>='):
+                    threshold = float(alt[2:])
+                    if amount >= threshold:
+                        return True
+                elif alt.startswith('<='):
+                    threshold = float(alt[2:])
+                    if amount <= threshold:
+                        return True
+                elif alt.startswith('>'):
+                    threshold = float(alt[1:])
+                    if amount > threshold:
+                        return True
+                elif alt.startswith('<'):
+                    threshold = float(alt[1:])
+                    if amount < threshold:
+                        return True
+                elif alt.startswith('=='):
+                    threshold = float(alt[2:])
+                    if amount == threshold:
+                        return True
+                elif alt.startswith('!='):
+                    threshold = float(alt[2:])
+                    if amount != threshold:
+                        return True
+            return False
+        except (ValueError, IndexError):
+            return False
 
     if match_type == 'exact':
         return any(value.upper() == alt for alt in alternatives)
@@ -251,6 +302,9 @@ def _rule_matches(rule: CategoryRule, transaction: dict) -> bool:
     Matching is case-insensitive — patterns are pre-uppercased at load
     time and targets are uppercased here per comparison.
 
+    For compound match fields with pipe-delimited patterns, each pattern
+    alternative corresponds to each field in order.
+
     Args:
         rule:        The CategoryRule to evaluate.
         transaction: Canonical transaction dict (merchant already pre-normalized).
@@ -260,12 +314,27 @@ def _rule_matches(rule: CategoryRule, transaction: dict) -> bool:
     """
     components = _get_match_targets(rule, transaction)
     pattern = rule.pattern  # already uppercased
+    
+    # Split pattern by | for compound matching
+    pattern_alternatives = [p.strip() for p in pattern.split('|') if p.strip()]
 
     if rule.match_type == 'exact':
-        return all(any(_pattern_matches(pattern, value, 'exact') for value in component) for component in components)
+        # If we have multiple pattern alternatives and multiple components, match each pattern to each component
+        if len(pattern_alternatives) > 1 and len(components) > 1:
+            return all(
+                _pattern_matches(pattern_alternatives[i], component[0], 'exact')
+                for i, component in enumerate(components)
+            )
+        return all(any(_pattern_matches(p, value, 'exact') for value in component) for component in components for p in pattern_alternatives)
 
     if rule.match_type == 'contains':
-        return all(any(_pattern_matches(pattern, value, 'contains') for value in component) for component in components)
+        # If we have multiple pattern alternatives and multiple components, match each pattern to each component
+        if len(pattern_alternatives) > 1 and len(components) > 1:
+            return all(
+                _pattern_matches(pattern_alternatives[i], component[0], 'contains')
+                for i, component in enumerate(components)
+            )
+        return all(any(_pattern_matches(p, value, 'contains') for value in component) for component in components for p in pattern_alternatives)
 
     logger.warning(f"Unhandled match_type '{rule.match_type}' — skipping.")
     return False
@@ -299,6 +368,10 @@ def apply_rules(transaction: dict, rules: list[CategoryRule]) -> dict:
         Updated transaction dict (shallow copy of input).
     """
     result = transaction.copy()
+    
+    # Initialize excluded flag if not present
+    if 'excluded' not in result:
+        result['excluded'] = False
 
     for rule in rules:
         if not _rule_matches(rule, result):

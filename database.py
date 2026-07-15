@@ -64,7 +64,8 @@ _CREATE_TRANSACTIONS_TABLE = """
         amount           REAL,
         pending          INTEGER DEFAULT 0,
         institution      TEXT,
-        last_updated     TEXT
+        last_updated     TEXT,
+        excluded         INTEGER DEFAULT 0
     );
 """
 
@@ -83,6 +84,11 @@ _CREATE_INSTITUTION_INDEX = """
 # Add new column if it doesn't exist (for backward compatibility with existing DBs)
 _ADD_PLAID_CATEGORY_PRIMARY = """
     ALTER TABLE transactions ADD COLUMN plaid_category_primary TEXT;
+"""
+
+# Add excluded column if it doesn't exist (for backward compatibility with existing DBs)
+_ADD_EXCLUDED_COLUMN = """
+    ALTER TABLE transactions ADD COLUMN excluded INTEGER DEFAULT 0;
 """
 
 
@@ -159,6 +165,17 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 logger.debug("plaid_category_primary column already exists.")
             else:
                 raise
+        
+        # Migration: Add excluded column if it doesn't exist (for existing DBs)
+        try:
+            conn.execute(_ADD_EXCLUDED_COLUMN)
+            logger.debug("Added excluded column (new schema).")
+        except sqlite3.OperationalError as e:
+            if 'duplicate column name' in str(e).lower():
+                # Column already exists, no action needed
+                logger.debug("excluded column already exists.")
+            else:
+                raise
 
     logger.info("Database schema initialized successfully.")
 
@@ -170,11 +187,11 @@ _UPSERT_SQL = """
     INSERT OR REPLACE INTO transactions (
         transaction_id, date, account, merchant, description,
         plaid_category, plaid_category_primary, user_category, amount, pending,
-        institution, last_updated
+        institution, last_updated, excluded
     ) VALUES (
         :transaction_id, :date, :account, :merchant, :description,
         :plaid_category, :plaid_category_primary, :user_category, :amount, :pending,
-        :institution, :last_updated
+        :institution, :last_updated, :excluded
     )
 """
 

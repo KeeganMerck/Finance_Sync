@@ -24,54 +24,46 @@ match_type,match_field,pattern,user_category,normalized_merchant,exclude
 # "Bilt Housing Payment" on the Bilt card itself (early month).
 # Match on Coastal institution to avoid catching legitimate Bilt card payments.
 contains,description,Payment - Bilt Housing,,,true
+# ── GROUP 1a: PUBLIX CASHIER'S CHECK RENT PAYMENTS ─────────────────────────────
+# Publix cashier's checks used to pay rent (typically >$2000).
+# These are actual rent expenses paid via cashier's check from checking account.
+# Match on exact amount -2636.0 (the rent payment).
+# Other Publix transactions (groceries) will be categorized by Plaid as Groceries.
 #
+exact,amount,-2636.0,Rent & Utilities,,
+#contains,account AND merchant,GO GREEN CHECKING|Publix,Rent & Utilities,,
+#
+# ── GROUP 1b: COASTAL BILT CARD PAYMENTS (EXCLUSIONS) ─────────────────────────
 # Coastal checking payment to Bilt card (BILT CARD descriptor).
 # This is you paying down your Bilt card balance from checking.
 # The actual spending is captured by the individual merchant charges on the card.
+# Must come BEFORE the rent categorization rules so these payment exclusions
+# are applied before categorization.
+#
+exact,merchant,Bilt,,,true
 exact,description,BILT CARD,,,true
-#
-# ── GROUP 1b: BILT RENT (EARLY MONTH — DAYS 1-7) ──────────────────────────────
+# ── GROUP 1c: BILT RENT (EARLY MONTH — DAYS 1-7) ──────────────────────────────
 # Bilt Housing Payment and Bilt Rewards happen early month (typically days 1-3).
-# These are the actual rent charges. Match on day_of_month + merchant so only
-# Bilt-related transactions on those dates are affected.
+# These are the actual rent charges. Match on merchant to only catch Bilt transactions.
 #
-contains,day_of_month AND merchant,01|BILT,Rent & Utilities,,
-contains,day_of_month AND merchant,02|BILT,Rent & Utilities,,
-contains,day_of_month AND merchant,03|BILT,Rent & Utilities,,
-contains,day_of_month AND merchant,04|BILT,Rent & Utilities,,
-contains,day_of_month AND merchant,05|BILT,Rent & Utilities,,
-contains,day_of_month AND merchant,06|BILT,Rent & Utilities,,
-contains,day_of_month AND merchant,07|BILT,Rent & Utilities,,
+contains,merchant,Bilt Housing Payment,Rent & Utilities,,
+contains,merchant,Bilt Rewards,Rent & Utilities,,
 #
 # ── GROUP 1c: BILT CREDIT CARD PAYMENTS (MID-MONTH — DAYS 8-31) ────────────────
 # Autopay Payment on the Bilt card happens mid-month (around day 11-13 typically).
-# Match on day_of_month + merchant so unrelated merchants on those dates are not
-# categorized as card payments.
+# Match on merchant to only catch Bilt card payment transactions.
 #
-contains,day_of_month AND merchant,08|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,09|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,10|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,11|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,12|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,13|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,14|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,15|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,16|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,17|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,18|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,19|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,20|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,21|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,22|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,23|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,24|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,25|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,26|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,27|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,28|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,29|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,30|BILT,Credit Card Payments,,
-contains,day_of_month AND merchant,31|BILT,Credit Card Payments,,
+contains,merchant,Autopay Payment,Credit Card Payments,,
+#
+# ── GROUP 1d: COASTAL BILT CARD PAYMENTS (EXCLUSIONS) ─────────────────────────
+# Coastal checking payment to Bilt card (BILT CARD descriptor).
+# This is you paying down your Bilt card balance from checking.
+# The actual spending is captured by the individual merchant charges on the card.
+# Must come AFTER the rent categorization rules so actual rent charges are
+# categorized before these payment exclusions are applied.
+#
+exact,merchant,Bilt,,,true
+exact,description,BILT CARD,,,true
 #
 # ── GROUP 1b: CREDIT CARD PAYMENTS ───────────────────────────────────────────
 # Credit card autopay and manual payments on all cards (Chase, Amex, Bilt, etc.).
@@ -109,6 +101,9 @@ exact,plaid_category,TRANSFER_IN_TRANSFER_IN_FROM_APPS,Other Income,,
 # IRS refunds, savings interest, dividend deposits
 exact,plaid_category_primary,INCOME,Other Income,,
 #
+# Coastal Credit Union interest income (must come before rent catch-all)
+contains,description,Deposit Dividend,Other Income,,
+#
 # ── GROUP 4: RENT & UTILITIES ────────────────────────────────────────────────
 # Rent and all utility types share one category per user preference.
 # Bilt rent is handled in Group 1b (Bilt Housing Payment, Bilt Rewards — early month).
@@ -121,29 +116,13 @@ exact,plaid_category,RENT_AND_UTILITIES_WATER_AND_SEWAGE,Rent & Utilities,,
 exact,plaid_category,RENT_AND_UTILITIES_TELEPHONE,Rent & Utilities,,
 exact,plaid_category,RENT_AND_UTILITIES_INTERNET_AND_CABLE,Rent & Utilities,,
 #
-# ── GROUP 5: SUBSCRIPTIONS ───────────────────────────────────────────────────
-# Must come before the ENTERTAINMENT catch-all (Group 12).
+# Catch-all for any remaining RENT_AND_UTILITIES transactions
+# This ensures Coastal BILT CARD payments and other uncategorized rent transactions
+# get a user_category instead of falling through to the raw plaid_category_primary
+exact,plaid_category_primary,RENT_AND_UTILITIES,Rent & Utilities,,
 #
-contains,merchant,Spotify,Subscriptions,Spotify,
-contains,merchant,Apple,Subscriptions,Apple,
-contains,merchant,Netflix,Subscriptions,Netflix,
-contains,merchant,Hulu,Subscriptions,Hulu,
-contains,merchant,YouTube,Subscriptions,YouTube Premium,
-contains,merchant,Amazon Prime,Subscriptions,Amazon Prime,
-#
-# ── GROUP 6: HOME ────────────────────────────────────────────────────────────
-# AEIS appears as a recurring home-related charge (HOA or home services).
-#
-contains,merchant,AEIS,Home,,
-exact,plaid_category_primary,HOME_IMPROVEMENT,Home,,
-#
-# ── GROUP 7: HEALTH ──────────────────────────────────────────────────────────
-# Covers doctors, dentists, pharmacies, supplements, labs.
-#
-exact,plaid_category_primary,MEDICAL,Health & Fitness,,
-#
-# ── GROUP 8: GAS ─────────────────────────────────────────────────────────────
-# Gasoline, fuel pump stations. Specific merchants first.
+# ── GROUP 5: GAS ─────────────────────────────────────────────────────────────
+# Gasoline, fuel pump stations.Specific merchants first.
 #
 contains,merchant,Circle K,Gas,,
 contains,merchant,Shell,Gas,,
@@ -157,6 +136,27 @@ contains,merchant,Pilot Flying J,Gas,,
 # Plaid gas category catch-all
 exact,plaid_category,TRANSPORTATION_GAS,Gas,,
 #
+# ── GROUP 6: SUBSCRIPTIONS ───────────────────────────────────────────────────
+# Must come before the ENTERTAINMENT catch-all (Group 12).
+#
+contains,merchant,Spotify,Subscriptions,Spotify,
+contains,merchant,Apple,Subscriptions,Apple,
+contains,merchant,Netflix,Subscriptions,Netflix,
+contains,merchant,Hulu,Subscriptions,Hulu,
+contains,merchant,YouTube,Subscriptions,YouTube Premium,
+contains,merchant,Amazon Prime,Subscriptions,Amazon Prime,
+#
+# ── GROUP 7: HOME ────────────────────────────────────────────────────────────
+# AEIS appears as a recurring home-related charge (HOA or home services).
+#
+contains,merchant,AEIS,Home,,
+exact,plaid_category_primary,HOME_IMPROVEMENT,Home,,
+#
+# ── GROUP 8: HEALTH ──────────────────────────────────────────────────────────
+# Covers doctors, dentists, pharmacies, supplements, labs.
+#
+exact,plaid_category_primary,MEDICAL,Health & Fitness,,
+#
 # ── GROUP 9: TRANSPORTATION ──────────────────────────────────────────────────
 # Ride shares, transit, parking, and other transportation (NOT gas — handled above).
 # Mavis Discount Tire is auto maintenance — Plaid puts it in GENERAL_SERVICES
@@ -167,7 +167,7 @@ contains,merchant,Mavis Discount Tire,Transportation,,
 # Plaid transportation category catch-all (excludes GAS which is handled above)
 exact,plaid_category_primary,TRANSPORTATION,Transportation,,
 #
-# ── GROUP 9: RESTAURANT & BAR OVERRIDES ─────────────────────────────────────
+# ── GROUP 10: RESTAURANT & BAR OVERRIDES ─────────────────────────────────────
 # These merchants are misclassified by Plaid (as OTHER, GENERAL_SERVICES, or
 # FOOD_AND_DRINK_GROCERIES) but are clearly restaurants or bars.
 # Must come before BOTH the Groceries rules and the Food catch-all.
@@ -179,7 +179,7 @@ contains,merchant,Stable Hand,Restaurants & Bars,Stable Hand,
 contains,merchant,Lokal,Restaurants & Bars,,
 contains,merchant,Helopay,Restaurants & Bars,,
 #
-# ── GROUP 10: GROCERIES ──────────────────────────────────────────────────────
+# ── GROUP 11: GROCERIES ──────────────────────────────────────────────────────
 # Specific grocery store rules catch known chains first (in case Plaid ever
 # miscategorizes one of them). Then the plaid_category catch-all covers the rest.
 #
@@ -197,14 +197,14 @@ contains,merchant,Sam's Club,Groceries,Sam's Club,
 # Plaid-labeled groceries catch-all (covers specialty stores, local markets, etc.)
 exact,plaid_category,FOOD_AND_DRINK_GROCERIES,Groceries,,
 #
-# ── GROUP 11: RESTAURANTS & BARS ─────────────────────────────────────────────
+# ── GROUP 12: RESTAURANTS & BARS ─────────────────────────────────────────────
 # Broad catch-all for all remaining FOOD_AND_DRINK transactions.
 # Covers restaurants, coffee shops, bars, fast food, food delivery, vending.
-# Groceries (Group 10) must be defined above this to avoid being caught here.
+# Groceries (Group 11) must be defined above this to avoid being caught here.
 #
 exact,plaid_category_primary,FOOD_AND_DRINK,Restaurants & Bars,,
 #
-# ── GROUP 12: ENTERTAINMENT ──────────────────────────────────────────────────
+# ── GROUP 13: ENTERTAINMENT ──────────────────────────────────────────────────
 # Skyla Credit Union in this context is a music/entertainment venue,
 # NOT a financial institution — must be caught before the LOAN_PAYMENTS
 # category would (incorrectly) handle it.
@@ -214,12 +214,12 @@ contains,merchant,GolfNow,Entertainment,,
 contains,merchant,Vivid Seats,Entertainment,,
 exact,plaid_category_primary,ENTERTAINMENT,Entertainment,,
 #
-# ── GROUP 13: TRAVEL ─────────────────────────────────────────────────────────
+# ── GROUP 14: TRAVEL ─────────────────────────────────────────────────────────
 # Hotels, flights, and travel services.
 #
 exact,plaid_category_primary,TRAVEL,Travel,,
 #
-# ── GROUP 14: SHOPPING — SPECIFIC OVERRIDES ──────────────────────────────────
+# ── GROUP 15: SHOPPING — SPECIFIC OVERRIDES ──────────────────────────────────
 # These merchants have inconsistent or incorrect Plaid categories (OTHER,
 # TRANSFER_IN, GENERAL_SERVICES) that would otherwise misclassify them.
 #
@@ -227,7 +227,7 @@ contains,merchant,Rhoback,Shopping,,
 contains,merchant,Tuckernuck,Shopping,,
 exact,merchant,Hilliard Studio Method,Shopping,,
 #
-# ── GROUP 15: SHOPPING — CATEGORY CATCH-ALLS ─────────────────────────────────
+# ── GROUP 16: SHOPPING — CATEGORY CATCH-ALLS ─────────────────────────────────
 # PERSONAL_CARE (beauty, grooming, gyms) maps to Shopping per user preference.
 # GENERAL_SERVICES (shipping, insurance, automotive) maps to Shopping as default.
 # Add specific rules in Groups 7-8 above to pull items out of Shopping.
@@ -236,7 +236,7 @@ exact,plaid_category_primary,GENERAL_MERCHANDISE,Shopping,,
 exact,plaid_category_primary,PERSONAL_CARE,Shopping,,
 exact,plaid_category_primary,GENERAL_SERVICES,Shopping,,
 #
-# ── GROUP 16: TRANSFERS ──────────────────────────────────────────────────────
+# ── GROUP 17: TRANSFERS ──────────────────────────────────────────────────────
 # Internal account-to-account transfers and outbound payment app transfers.
 # Inbound payment app transfers (Venmo received, etc.) are handled in
 # Group 3 (Other Income) by the TRANSFER_IN_TRANSFER_IN_FROM_APPS rule.
@@ -244,7 +244,7 @@ exact,plaid_category_primary,GENERAL_SERVICES,Shopping,,
 exact,plaid_category_primary,TRANSFER_IN,Transfers,,
 exact,plaid_category_primary,TRANSFER_OUT,Transfers,,
 #
-# ── GROUP 17: OTHER ───────────────────────────────────────────────────────────
+# ── GROUP 18: OTHER ───────────────────────────────────────────────────────────
 # Catch-all for anything Plaid cannot classify.
 #
 exact,plaid_category_primary,OTHER,Other,,

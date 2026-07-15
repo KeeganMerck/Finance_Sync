@@ -28,9 +28,16 @@ SHEET_HEADERS = ['Date', 'Account', 'Description', 'Category', 'Amount']
 
 
 def build_sheet_rows(transactions: Iterable[dict]) -> List[List[object]]:
-    """Build rows in the exact shape expected by the Google Sheet table."""
+    """Build rows in the exact shape expected by the Google Sheet table.
+    
+    Excluded transactions are filtered out before export to avoid double-counting
+    internal passthroughs (e.g., credit card payments, Bilt Housing transfers).
+    """
     rows: List[List[object]] = [SHEET_HEADERS]
     for transaction in transactions:
+        # Skip excluded transactions
+        if transaction.get('excluded'):
+            continue
         rows.append([
             transaction.get('date', ''),
             transaction.get('account', ''),

@@ -1,0 +1,20 @@
+# finance_sync — Python dependencies
+#
+# Plaid Python SDK
+plaid-python>=14.0.0
+#
+# Load credentials from .env file instead of hardcoding in config.py
+python-dotenv>=1.0.0
+#
+# Link setup Flask app for Plaid Link UI
+flask>=3.0.0
+#
+# ─── Development / testing ────────────────────────────────────────────────────
+#
+# All tests use stdlib unittest — no pytest required.
+# Uncomment if you prefer pytest's output formatting:
+pytest>=8.0.0
+
+# Google Sheets export integration
+gspread>=6.1.0
+google-auth>=2.36.0

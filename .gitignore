@@ -1,0 +1,65 @@
+# ─── Credentials — NEVER commit these ────────────────────────────────────────
+.env
+*.env
+secrets.json
+tokens.json
+plaid_tokens.json
+access_tokens.json
+
+# ─── Database ─────────────────────────────────────────────────────────────────
+# Comment out data/*.db if you want to track the database in version control.
+# Keeping it excluded is safer — it may contain real financial data.
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# ─── Exported CSVs (contain real transaction data) ───────────────────────────
+data/*.csv
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ─── Virtual environments ─────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ─── IDEs and editors ────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ─── Windows system files ────────────────────────────────────────────────────
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ─── macOS system files ───────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ─── Distribution / packaging (future) ───────────────────────────────────────
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# ─── Test artifacts ───────────────────────────────────────────────────────────
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ─── Credentials for third-party services (future) ───────────────────────────────
+google_credentials.json

@@ -72,9 +72,9 @@ VALID_MATCH_FIELDS = {
     'amount',  # numeric amount for threshold matching (pattern like ">2000" or "<-100")
 }
 
-# Supported compound match fields use ' AND ' between simple field names.
-# Example: "day_of_month AND merchant"
-COMPOUND_MATCH_FIELD_SEPARATOR = ' AND '
+# Supported compound match fields use ' and ' between simple field names.
+# Example: "day_of_month and merchant"
+COMPOUND_MATCH_FIELD_SEPARATOR = ' and '
 
 
 # ─── Data Model ───────────────────────────────────────────────────────────────
@@ -151,7 +151,7 @@ def load_rules(rules_path: Path = RULES_CSV_PATH) -> list[CategoryRule]:
                     f"expected one of {VALID_MATCH_TYPES}. Skipping."
                 )
                 continue
-
+            
             if COMPOUND_MATCH_FIELD_SEPARATOR in match_field:
                 parts = [part.strip().lower() for part in match_field.split(COMPOUND_MATCH_FIELD_SEPARATOR)]
                 if not all(part in VALID_MATCH_FIELDS for part in parts):
@@ -160,7 +160,7 @@ def load_rules(rules_path: Path = RULES_CSV_PATH) -> list[CategoryRule]:
                         f"expected fields in {VALID_MATCH_FIELDS}. Invalid parts: {[p for p in parts if p not in VALID_MATCH_FIELDS]}. Defaulting to 'any'."
                     )
                     match_field = 'any'
-                # If all parts are valid, match_field is already set correctly (compound form)
+            # If all parts are valid, keep the compound match_field (do NOT default to 'any')
             elif match_field not in VALID_MATCH_FIELDS:
                 logger.warning(
                     f"Row {line_num}: unknown match_field '{match_field}' — "
@@ -302,9 +302,11 @@ def _rule_matches(rule: CategoryRule, transaction: dict) -> bool:
     Matching is case-insensitive — patterns are pre-uppercased at load
     time and targets are uppercased here per comparison.
 
-    For compound match fields with pipe-delimited patterns, each pattern
-    alternative corresponds to each field in order.
-
+    For compound match fields (e.g., "account AND merchant"):
+    - If pattern contains "|", each field matches against the corresponding pattern part
+      (e.g., "GO GREEN CHECKING|Publix" means account matches "GO GREEN CHECKING" AND merchant matches "Publix")
+    - If pattern doesn't contain "|", all fields must match against the same pattern
+    
     Args:
         rule:        The CategoryRule to evaluate.
         transaction: Canonical transaction dict (merchant already pre-normalized).
@@ -319,21 +321,39 @@ def _rule_matches(rule: CategoryRule, transaction: dict) -> bool:
     pattern_alternatives = [p.strip() for p in pattern.split('|') if p.strip()]
 
     if rule.match_type == 'exact':
-        # If we have multiple pattern alternatives and multiple components, match each pattern to each component
-        if len(pattern_alternatives) > 1 and len(components) > 1:
-            return all(
-                _pattern_matches(pattern_alternatives[i], component[0], 'exact')
-                for i, component in enumerate(components)
-            )
+        # If compound field with multiple pattern alternatives, match each field to each pattern part
+        if COMPOUND_MATCH_FIELD_SEPARATOR in rule.match_field and len(pattern_alternatives) > 1:
+            if len(pattern_alternatives) == len(components):
+                # Each field matches its corresponding pattern part
+                return all(
+                    _pattern_matches(pattern_alternatives[i], component[0], 'exact')
+                    for i, component in enumerate(components)
+                )
+            else:
+                # All fields must match all pattern alternatives (AND logic)
+                return all(
+                    any(_pattern_matches(p, value, 'exact') for value in component)
+                    for component in components
+                    for p in pattern_alternatives
+                )
         return all(any(_pattern_matches(p, value, 'exact') for value in component) for component in components for p in pattern_alternatives)
 
     if rule.match_type == 'contains':
-        # If we have multiple pattern alternatives and multiple components, match each pattern to each component
-        if len(pattern_alternatives) > 1 and len(components) > 1:
-            return all(
-                _pattern_matches(pattern_alternatives[i], component[0], 'contains')
-                for i, component in enumerate(components)
-            )
+        # If compound field with multiple pattern alternatives, match each field to each pattern part
+        if COMPOUND_MATCH_FIELD_SEPARATOR in rule.match_field and len(pattern_alternatives) > 1:
+            if len(pattern_alternatives) == len(components):
+                # Each field matches its corresponding pattern part
+                return all(
+                    _pattern_matches(pattern_alternatives[i], component[0], 'contains')
+                    for i, component in enumerate(components)
+                )
+            else:
+                # All fields must match all pattern alternatives (AND logic)
+                return all(
+                    any(_pattern_matches(p, value, 'contains') for value in component)
+                    for component in components
+                    for p in pattern_alternatives
+                )
         return all(any(_pattern_matches(p, value, 'contains') for value in component) for component in components for p in pattern_alternatives)
 
     logger.warning(f"Unhandled match_type '{rule.match_type}' — skipping.")

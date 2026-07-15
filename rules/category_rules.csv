@@ -27,10 +27,11 @@ contains,description,Payment - Bilt Housing,,,true
 # ── GROUP 1a: PUBLIX CASHIER'S CHECK RENT PAYMENTS ─────────────────────────────
 # Publix cashier's checks used to pay rent (typically >$2000).
 # These are actual rent expenses paid via cashier's check from checking account.
-# Match on exact amount -2636.0 (the rent payment).
+# CURRENT: Match on exact amount -2636.0 (the rent payment).
 # Other Publix transactions (groceries) will be categorized by Plaid as Groceries.
-#
 exact,amount,-2636.0,Rent & Utilities,,
+# IDEAL: Match on account containing "GO GREEN CHECKING" and merchant "Publix" to distinguish from
+# regular grocery shopping on credit cards.
 #contains,account AND merchant,GO GREEN CHECKING|Publix,Rent & Utilities,,
 #
 # ── GROUP 1b: COASTAL BILT CARD PAYMENTS (EXCLUSIONS) ─────────────────────────
@@ -53,7 +54,7 @@ contains,merchant,Bilt Rewards,Rent & Utilities,,
 # Autopay Payment on the Bilt card happens mid-month (around day 11-13 typically).
 # Match on merchant to only catch Bilt card payment transactions.
 #
-contains,merchant,Autopay Payment,Credit Card Payments,,
+contains,merchant,Autopay Payment,Credit Card Payments,,true
 #
 # ── GROUP 1d: COASTAL BILT CARD PAYMENTS (EXCLUSIONS) ─────────────────────────
 # Coastal checking payment to Bilt card (BILT CARD descriptor).
@@ -71,13 +72,13 @@ exact,description,BILT CARD,,,true
 # separate reporting/tracking of card payment activity.
 #
 # Match the Plaid category for credit card payment transactions
-exact,plaid_category,LOAN_PAYMENTS_CREDIT_CARD_PAYMENT,Credit Card Payments,,
+exact,plaid_category,LOAN_PAYMENTS_CREDIT_CARD_PAYMENT,Credit Card Payments,,true
 #
 # Catch merchant-specific credit card payment descriptions by card name
-contains,merchant,AUTOPAY PAYMENT,Credit Card Payments,,
-contains,merchant,AUTOMATIC PAYMENT,Credit Card Payments,,
-contains,merchant,AMEX EPAYMENT,Credit Card Payments,,
-contains,merchant,CHASE CREDIT CRD,Credit Card Payments,,
+contains,merchant,AUTOPAY PAYMENT,Credit Card Payments,,true
+contains,merchant,AUTOMATIC PAYMENT,Credit Card Payments,,true
+contains,merchant,AMEX EPAYMENT,Credit Card Payments,,true
+contains,merchant,CHASE CREDIT CRD,Credit Card Payments,,true
 #
 # ── GROUP 2: PAYCHECK ────────────────────────────────────────────────────────
 # Paycheck must come before the broad INCOME catch-all below.
@@ -96,7 +97,8 @@ contains,merchant,AEIS,Other Income,,
 #
 # Payment app inbound transfers — Venmo received, CashApp received, etc.
 # Outbound app transfers (you paying someone) stay in Transfers (Group 16).
-exact,plaid_category,TRANSFER_IN_TRANSFER_IN_FROM_APPS,Other Income,,
+exact,plaid_category_primary,TRANSFER_IN,Other Income,,
+exact,plaid_category_primary,TRANSFER_OUT,Other Income,,
 #
 # IRS refunds, savings interest, dividend deposits
 exact,plaid_category_primary,INCOME,Other Income,,
@@ -236,15 +238,7 @@ exact,plaid_category_primary,GENERAL_MERCHANDISE,Shopping,,
 exact,plaid_category_primary,PERSONAL_CARE,Shopping,,
 exact,plaid_category_primary,GENERAL_SERVICES,Shopping,,
 #
-# ── GROUP 17: TRANSFERS ──────────────────────────────────────────────────────
-# Internal account-to-account transfers and outbound payment app transfers.
-# Inbound payment app transfers (Venmo received, etc.) are handled in
-# Group 3 (Other Income) by the TRANSFER_IN_TRANSFER_IN_FROM_APPS rule.
-#
-exact,plaid_category_primary,TRANSFER_IN,Transfers,,
-exact,plaid_category_primary,TRANSFER_OUT,Transfers,,
-#
-# ── GROUP 18: OTHER ───────────────────────────────────────────────────────────
+# ── GROUP 17: OTHER ───────────────────────────────────────────────────────────
 # Catch-all for anything Plaid cannot classify.
 #
 exact,plaid_category_primary,OTHER,Other,,

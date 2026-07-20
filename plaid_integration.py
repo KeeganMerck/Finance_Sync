@@ -404,6 +404,10 @@ def create_link_token(user_id: str = 'finance_sync_user') -> str:
     and capture the returned access token. You will not need to repeat this step
     unless you revoke the token or need to add another institution.
 
+    This function creates a link token with:
+    - 730 days (2 years) of transaction history
+    - Optional products for investments, liabilities, and auth to maximize data collection
+
     Args:
         user_id: Arbitrary unique identifier for the end user (default: 'finance_sync_user').
 
@@ -423,7 +427,7 @@ def create_link_token(user_id: str = 'finance_sync_user') -> str:
         
         client = get_plaid_client()
 
-        # Build the core request mapping options directly
+        # Build the core request with maximum data collection (reporting only, no money movement)
         request = LinkTokenCreateRequest(
             products=[Products('transactions')],
             client_name='Finance Sync',
@@ -432,12 +436,18 @@ def create_link_token(user_id: str = 'finance_sync_user') -> str:
             user=LinkTokenCreateRequestUser(client_user_id=user_id),
             transactions={
                 "days_requested": 730  # Forces the 24-month historical pull
-            }
+            },
+            optional_products=[
+                Products('investments'),        # Investment holdings and transactions
+                Products('liabilities'),        # Loan/credit data (interest rates, payments)
+                Products('identity'),           # User identity information
+                Products('assets'),             # Asset reports
+            ]
         )
 
         response = client.link_token_create(request)
         link_token = response['link_token']
-        logger.info(f"Created Plaid Link token with 730 days history for user: {user_id}")
+        logger.info(f"Created Plaid Link token with 730 days history and optional products for user: {user_id}")
         return link_token
 
     except Exception as e:

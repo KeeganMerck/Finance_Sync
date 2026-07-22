@@ -84,6 +84,7 @@ contains,merchant,AEIS,Other Income,,
 # Payment app inbound transfers — Venmo received, CashApp received, etc.
 # Outbound app transfers (you paying someone) stay in Transfers (Group 16).
 exact,plaid_category_primary,TRANSFER_IN,Other Income,,
+exact,plaid_category,TRANSFER_OUT_INVESTMENT_AND_RETIREMENT_FUNDS,,,true
 exact,plaid_category_primary,TRANSFER_OUT,Other Income,,
 #
 # IRS refunds, savings interest, dividend deposits

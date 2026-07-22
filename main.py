@@ -9,13 +9,14 @@ Adding a new pipeline stage means adding one function call here.
 
 Pipeline stages (in order):
   1. Load transactions   — sync.py
+  1b. Fetch balances     — balance_client.py (account balance snapshots)
   2. Categorize          — categorizer.py (normalize merchants, apply overrides)
   3. Persist             — database.py    (SQLite upsert; skipped if disabled)
   4. Export              — export.py      (cash_flow.csv + raw_transactions.csv)
   5. Log summary         — stdout + sync.log
 
 Dry run mode (DRY_RUN=True in config.py):
-  Stages 1 and 2 run normally so categorization logic can be verified.
+  Stages 1, 1b, and 2 run normally so categorization logic can be verified.
   Stage 3 (database) and Stage 4 (export) log what they would do without
   writing anything to disk.
 """
@@ -24,12 +25,15 @@ import logging
 import sys
 from datetime import datetime
 
-from config import DRY_RUN, ENABLE_DATABASE, GOOGLE_SHEETS_ENABLED, LOG_PATH
+from config import DRY_RUN, ENABLE_DATABASE, GOOGLE_SHEETS_ENABLED, LOG_PATH, USE_PLAID
 from sync import fetch_transactions
 from categorizer import categorize_transactions, load_rules
 from database import get_all_transactions, init_db, upsert_transactions
 from export import run_exports
 from google_sheets import update_google_sheet
+from balance_client import fetch_balances
+from balance_store import upsert_snapshots as upsert_balance_snapshots
+from balance_export import export_to_sheets as export_balances_to_sheets
 
 
 # ─── Logging Configuration ─────────────────────────────────────────────────────
@@ -44,6 +48,11 @@ def configure_logging() -> None:
     Called once at startup before any pipeline code runs.
     """
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # Configure stdout to handle UTF-8 on Windows
+    if sys.platform == 'win32':
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
     logging.basicConfig(
         level=logging.INFO,
@@ -70,7 +79,7 @@ def run_pipeline() -> None:
     logger = logging.getLogger(__name__)
 
     start_time = datetime.now()
-    separator  = '─' * 60
+    separator  = '-' * 60
 
     logger.info(separator)
     logger.info("Finance Sync — Pipeline Start")
@@ -83,7 +92,7 @@ def run_pipeline() -> None:
     #
     # sync.py abstracts the data source. If USE_PLAID is False, transactions are loaded from a mock JSON file.
     #
-    logger.info("Stage 1/4 — Loading transactions...")
+    logger.info("Stage 1/5 — Loading transactions...")
     try:
         init_db() # Ensure database is initialized before fetching transactions (for incremental sync)
         transactions = fetch_transactions()
@@ -96,12 +105,39 @@ def run_pipeline() -> None:
 
     logger.info(f"  Loaded {len(transactions)} transaction(s).")
 
+    # ── Stage 1b: Fetch and Store Account Balances ─────────────────────────────
+    #
+    # Fetches current account balances from Plaid and stores them as snapshots.
+    # Non-fatal: if this stage fails, the pipeline continues to Stage 2.
+    # Transaction pipeline must never be blocked by balance fetch failure.
+    #
+    logger.info("Stage 1b/5 — Fetching and storing account balances...")
+    try:
+        if not USE_PLAID:
+            logger.info("  Balance fetch requires Plaid (USE_PLAID=True) — skipping.")
+        else:
+            balances = fetch_balances()
+            if balances:
+                upserted = upsert_balance_snapshots(balances)
+                logger.info(f"  Upserted {upserted} account balance snapshot(s).")
+                
+                # Export to Google Sheets
+                balance_export_summary = export_balances_to_sheets(dry_run=DRY_RUN)
+                logger.info(f"  Balance export: {balance_export_summary}")
+            else:
+                logger.info("  No balance data fetched — skipping balance storage and export.")
+    except Exception:
+        logger.exception(
+            "Non-fatal: balance fetch and storage failed. "
+            "Continuing to transaction categorization stage."
+        )
+
     # ── Stage 2: Categorize & Normalize ──────────────────────────────────────
     #
     # Loads rules from category_rules.csv, normalizes merchant names, and
     # applies user-defined category overrides. plaid_category is never modified.
     #
-    logger.info("Stage 2/4 — Categorizing and normalizing merchants...")
+    logger.info("Stage 2/5 — Categorizing and normalizing merchants...")
     try:
         rules = load_rules()
         transactions, categorized_count, uncategorized_count, excluded_count = categorize_transactions(
@@ -130,7 +166,7 @@ def run_pipeline() -> None:
     # Non-fatal: if this fails, the pipeline continues and exports still run.
     # Reason: it is better to produce today's CSV than to abort on a DB error.
     #
-    logger.info("Stage 3/4 — Persisting to database...")
+    logger.info("Stage 3/5 — Persisting to database...")
 
     if not ENABLE_DATABASE:
         logger.info("  Database disabled via config — skipping persistence.")
@@ -150,7 +186,7 @@ def run_pipeline() -> None:
     # Writes cash_flow.csv (Excel-compatible) and raw_transactions.csv (archival).
     # In dry run mode, logs what would be written without touching the filesystem.
     #
-    logger.info("Stage 4/4 — Exporting CSV files...")
+    logger.info("Stage 4/5 — Exporting CSV files...")
     try:
         export_summary = run_exports(
             transactions,

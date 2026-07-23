@@ -9,7 +9,7 @@ Adding a new pipeline stage means adding one function call here.
 
 Pipeline stages (in order):
   1. Load transactions   — sync.py
-  1b. Fetch balances     — balance_client.py (account balance snapshots)
+  1b. Fetch balances     — balance.py (account balance snapshots)
   2. Categorize          — categorizer.py (normalize merchants, apply overrides)
   3. Persist             — database.py    (SQLite upsert; skipped if disabled)
   4. Export              — export.py      (cash_flow.csv + raw_transactions.csv)
@@ -31,9 +31,7 @@ from categorizer import categorize_transactions, load_rules
 from database import get_all_transactions, init_db, upsert_transactions
 from export import run_exports
 from google_sheets import update_google_sheet
-from balance_client import fetch_balances
-from balance_store import upsert_snapshots as upsert_balance_snapshots
-from balance_export import export_to_sheets as export_balances_to_sheets
+from balance import fetch_balances, upsert_snapshots as upsert_balance_snapshots, export_to_sheets as export_balances_to_sheets
 
 
 # ─── Logging Configuration ─────────────────────────────────────────────────────

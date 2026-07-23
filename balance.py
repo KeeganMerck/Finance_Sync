@@ -1,4 +1,284 @@
 """
+balance_client.py
+==================
+Balance snapshot client for fetching account balances from Plaid.
+
+This module provides the interface for fetching current account balances
+from all configured Plaid institutions. It abstracts away Plaid API details
+and returns canonical balance dicts matching the account_snapshots schema.
+
+Design principle:
+  - Non-fatal on individual institution failure — logs error and continues
+  - Handles missing credit_limit gracefully (None for non-credit accounts)
+  - Returns today's date as snapshot_date for all fetched balances
+"""
+
+import logging
+from pathlib import Path
+from datetime import date
+import re
+from typing import List, Optional
+
+from config import USE_PLAID, DATABASE_PATH, ENABLE_DATABASE, DRY_RUN, GOOGLE_SHEETS_ENABLED, GOOGLE_SHEETS_SPREADSHEET_NAME
+import plaid_integration as plaid_integration
+
+import gspread
+from google.oauth2.service_account import Credentials
+
+logger = logging.getLogger(__name__)
+
+
+def fetch_balances() -> list[dict]:
+    """
+    Fetch current account balances from all configured Plaid institutions.
+
+    Iterates through access tokens exactly as sync.py does, calling
+    get_accounts() per institution to fetch current balances.
+
+    Returns canonical balance dicts matching the account_snapshots schema:
+      - snapshot_date     : Today's date (YYYY-MM-DD)
+      - account_id        : Plaid's unique account identifier
+      - account_name      : Human-readable name (e.g. "Checking ••1234")
+      - institution       : Institution name (e.g. "Chase", "Coastal FCU")
+      - account_type      : "depository", "credit", "investment", "loan"
+      - account_subtype   : "checking", "savings", "credit card", etc.
+      - current_balance   : Current balance from Plaid
+      - available_balance : Available balance (for depository accounts)
+      - credit_limit      : Credit limit (for credit cards only, None otherwise)
+      - currency          : Currency code (default "USD")
+
+    Handles missing credit_limit gracefully — sets to None for non-credit accounts.
+    Non-fatal on individual institution failure — logs error and continues.
+
+    Returns:
+        List of balance dicts. Empty list if USE_PLAID is False or no tokens configured.
+
+    Raises:
+        None. Individual institution failures are logged but do not raise.
+    """
+    if not USE_PLAID:
+        logger.info("Balance fetch requires Plaid (USE_PLAID=True) — skipping.")
+        return []
+
+    logger.info("Fetching account balances from Plaid...")
+
+    access_tokens = plaid_integration.get_access_tokens()
+    if not access_tokens:
+        logger.warning("No Plaid access tokens configured — returning empty balance list.")
+        return []
+
+    all_balances = []
+    snapshot_date = date.today().isoformat()
+
+    for institution_name, access_token in access_tokens.items():
+        try:
+            logger.info(f"Processing institution for balances: {institution_name}")
+
+            # Fetch accounts with balance information
+            accounts = _get_accounts_with_balances(access_token)
+
+            for acct in accounts:
+                balance_dict = {
+                    'snapshot_date': snapshot_date,
+                    'account_id': acct['account_id'],
+                    'account_name': f"{acct['name']} ••{acct['mask']}",
+                    'institution': institution_name,
+                    'account_type': acct['type'],
+                    'account_subtype': acct['subtype'],
+                    'current_balance': acct.get('current_balance'),
+                    'available_balance': acct.get('available_balance'),
+                    'credit_limit': acct.get('credit_limit'),  # None for non-credit accounts
+                    'currency': acct.get('currency', 'USD'),
+                }
+                all_balances.append(balance_dict)
+
+            logger.debug(f"  Fetched {len(accounts)} account balance(s) from {institution_name}.")
+
+        except Exception as e:
+            logger.exception(f"Non-fatal: failed to fetch balances for {institution_name}: {e}")
+            continue
+
+    logger.info(f"Fetched {len(all_balances)} total account balance snapshot(s).")
+    return all_balances
+
+
+def _get_accounts_with_balances(access_token: str) -> list[dict]:
+    """
+    Fetch accounts with balance information from Plaid.
+
+    This uses the /accounts/balance/get endpoint which provides real-time
+    balance data including credit limits for credit accounts.
+
+    Args:
+        access_token: Plaid access token for one institution.
+
+    Returns:
+        List of account dicts with balance information.
+
+    Raises:
+        Exception: On API errors (propagated to caller for graceful handling).
+    """
+    try:
+        from plaid.model.accounts_balance_get_request import AccountsBalanceGetRequest
+
+        client = plaid_integration.get_plaid_client()
+        request = AccountsBalanceGetRequest(access_token=access_token)
+        response = client.accounts_balance_get(request)
+
+        accounts = []
+        for acct in response['accounts']:
+            # Extract balance information from the Plaid response
+            balances = acct.get('balances', {})
+
+            # Use Plaid's provided values directly
+            current_balance = balances.get('current')
+            available_balance = balances.get('available')
+            credit_limit = balances.get('limit')
+
+            account_dict = {
+                'account_id': acct.account_id,
+                'name': acct.name,
+                'mask': acct.mask,
+                'type': str(acct.type),
+                'subtype': str(acct.subtype),
+                'current_balance': current_balance,
+                'available_balance': available_balance,
+                'credit_limit': credit_limit,
+                'currency': balances.get('iso_currency_code', 'USD'),
+            }
+            accounts.append(account_dict)
+
+        return accounts
+
+    except Exception as e:
+        logger.exception(f"Failed to fetch accounts with balances: {e}")
+        raise
+
+"""
+Balance Store
+=================
+Balance snapshot storage layer.
+
+This module provides a clean interface for storing and retrieving account
+balance snapshots from the database. It wraps the database operations
+specific to balance snapshots, following the same pattern as database.py
+for transactions.
+
+All functions respect the ENABLE_DATABASE config flag and handle errors
+gracefully with appropriate logging.
+"""
+
+def upsert_snapshots(snapshots: list[dict], db_path: Optional[Path] = None) -> int:
+    """
+    Batch upsert account balance snapshots to the database.
+
+    This is a wrapper around database.upsert_snapshots() that provides
+    balance-specific logging and error handling.
+
+    Args:
+        snapshots: List of snapshot dicts matching the account_snapshots schema.
+        db_path:   Optional path to the database (uses default from config if None).
+
+    Returns:
+        Number of snapshots upserted. Returns 0 if database is disabled.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping snapshot upsert.")
+        return 0
+
+    from database import upsert_snapshots as db_upsert_snapshots
+
+    if db_path is None:
+        db_path = DATABASE_PATH
+
+    return db_upsert_snapshots(snapshots, db_path)
+
+
+def get_latest_balances(db_path: Optional[Path] = None) -> list[dict]:
+    """
+    Return the most recent snapshot for each account_id.
+
+    This is a wrapper around database.get_latest_balances() that provides
+    balance-specific logging and error handling.
+
+    Args:
+        db_path: Optional path to the database (uses default from config if None).
+
+    Returns:
+        List of snapshot dicts, one per account_id. Returns empty list if
+        database is disabled or no snapshots exist.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — get_latest_balances returning empty list.")
+        return []
+
+    from database import get_latest_balances as db_get_latest_balances
+
+    if db_path is None:
+        db_path = DATABASE_PATH
+
+    return db_get_latest_balances(db_path)
+
+
+def get_balance_history(days: int = 90, db_path: Optional[Path] = None) -> list[dict]:
+    """
+    Return all snapshots from the last N days.
+
+    This is a wrapper around database.get_balance_history() that provides
+    balance-specific logging and error handling.
+
+    Args:
+        days:    Number of days to look back (default: 90).
+        db_path: Optional path to the database (uses default from config if None).
+
+    Returns:
+        List of snapshot dicts ordered by snapshot_date ASC, account_id ASC.
+        Returns empty list if database is disabled or no snapshots exist.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — get_balance_history returning empty list.")
+        return []
+
+    from database import get_balance_history as db_get_balance_history
+
+    if db_path is None:
+        db_path = DATABASE_PATH
+
+    return db_get_balance_history(days, db_path)
+
+
+def get_net_worth_history(db_path: Optional[Path] = None) -> list[dict]:
+    """
+    Return net worth history aggregated by snapshot date.
+
+    This is a wrapper around database.get_net_worth_history() that provides
+    balance-specific logging and error handling.
+
+    Aggregates by snapshot_date:
+      - assets      = SUM of depository + investment balances
+      - liabilities = SUM of credit + loan balances (as positive)
+      - net_worth   = assets - liabilities
+
+    Args:
+        db_path: Optional path to the database (uses default from config if None).
+
+    Returns:
+        List of dicts with keys: snapshot_date, assets, liabilities, net_worth.
+        Ordered by snapshot_date ASC. Returns empty list if database is disabled
+        or no snapshots exist.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — get_net_worth_history returning empty list.")
+        return []
+
+    from database import get_net_worth_history as db_get_net_worth_history
+
+    if db_path is None:
+        db_path = DATABASE_PATH
+
+    return db_get_net_worth_history(db_path)
+
+"""
 balance_export.py
 ==================
 Google Sheets export for account balance snapshots.
@@ -10,16 +290,6 @@ Two sheets are created:
   1. "Account Balances" — Current balances for all accounts with summary rows
   2. "Net Worth History" — Historical net worth over time with embedded line chart
 """
-
-import logging
-from typing import List, Optional
-import re
-
-from config import DRY_RUN, GOOGLE_SHEETS_ENABLED, GOOGLE_SHEETS_SPREADSHEET_NAME
-from balance_store import get_latest_balances, get_net_worth_history
-
-logger = logging.getLogger(__name__)
-
 
 # ─── Formatting Helpers ─────────────────────────────────────────────────────
 
@@ -71,14 +341,6 @@ def normalize_account_name(account_name: str) -> str:
     normalized = title_case(normalized)
     
     return normalized
-
-try:
-    import gspread
-    from google.oauth2.service_account import Credentials
-except ImportError:  # pragma: no cover - optional dependency may not be installed
-    gspread = None
-    Credentials = None
-
 
 # ─── Account Balances Sheet ─────────────────────────────────────────────────────
 

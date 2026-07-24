@@ -466,156 +466,6 @@ def write_rows_to_sheet(worksheet, rows: List[List[object]]) -> None:
     worksheet.update('A1', rows)
 
 
-def format_account_balances_sheet(worksheet, data_rows: int) -> None:
-    """
-    Apply formatting to the Account Balances sheet.
-
-    Formats the sheet as a table with:
-    - Header row styling (bold, centered)
-    - Number formatting for currency columns
-    - Percentage formatting for utilization
-    - Borders around the table
-    - Alternating row colors for readability
-
-    Args:
-        worksheet: gspread Worksheet object.
-        data_rows: Number of data rows (excluding header and summary).
-    """
-    try:
-        # Get the full range of the data (header + data + summary)
-        # Data rows + 1 header + 1 empty + 3 summary = data_rows + 5 total rows
-        total_rows = data_rows + 5
-        total_cols = 8  # A to H
-
-        # Format header row (row 1) - bold, centered, light gray background
-        header_format = {
-            'textFormat': {'bold': True},
-            'horizontalAlignment': 'CENTER',
-            'backgroundColor': {'red': 0.9, 'green': 0.9, 'blue': 0.9}  # Light gray
-        }
-        
-        worksheet.format('A1:H1', header_format)
-
-        # Format currency columns (E, F, G) as currency
-        currency_format = {
-            'numberFormat': {
-                'type': 'CURRENCY',
-                'pattern': '$#,##0.00'
-            }
-        }
-        
-        # Apply to data rows only (row 2 to data_rows+1)
-        if data_rows > 0:
-            worksheet.format(f'E2:G{data_rows + 1}', currency_format)
-
-        # Format utilization column (H) as percentage
-        percent_format = {
-            'numberFormat': {
-                'type': 'NUMBER',
-                'pattern': '0.0%'
-            }
-        }
-        
-        if data_rows > 0:
-            worksheet.format(f'H2:H{data_rows + 1}', percent_format)
-
-        # Add borders to the data table
-        border_format = {
-            'borders': {
-                'top': {'style': 'SOLID'},
-                'bottom': {'style': 'SOLID'},
-                'left': {'style': 'SOLID'},
-                'right': {'style': 'SOLID'}
-            }
-        }
-        
-        # Apply borders to data range
-        if data_rows > 0:
-            worksheet.format(f'A1:H{data_rows + 1}', border_format)
-
-        # Format summary rows (bottom 3 rows) - bold
-        summary_start_row = data_rows + 3
-        worksheet.format(f'A{summary_start_row}:H{summary_start_row + 2}', {
-            'textFormat': {'bold': True}
-        })
-
-        # Format summary currency values
-        worksheet.format(f'E{summary_start_row}:G{summary_start_row + 2}', currency_format)
-
-        # Freeze header row
-        worksheet.freeze(rows=1)
-
-        # Auto-resize columns for better readability
-        worksheet.columns_auto_resize(1, total_cols)
-
-        logger.debug("Applied formatting to Account Balances sheet.")
-
-    except Exception as e:
-        logger.warning(f"Failed to format Account Balances sheet: {e}")
-
-
-def format_net_worth_sheet(worksheet, data_rows: int) -> None:
-    """
-    Apply formatting to the Net Worth History sheet.
-
-    Formats the sheet as a table with:
-    - Header row styling (bold, centered)
-    - Number formatting for currency columns
-    - Borders around the table
-    - Date formatting for the date column
-
-    Args:
-        worksheet: gspread Worksheet object.
-        data_rows: Number of data rows (excluding header).
-    """
-    try:
-        # Format header row (row 1) - bold, centered, light gray background
-        header_format = {
-            'textFormat': {'bold': True},
-            'horizontalAlignment': 'CENTER',
-            'backgroundColor': {'red': 0.9, 'green': 0.9, 'blue': 0.9}  # Light gray
-        }
-        
-        worksheet.format('A1:D1', header_format)
-
-        # Format currency columns (B, C, D) as currency
-        currency_format = {
-            'numberFormat': {
-                'type': 'CURRENCY',
-                'pattern': '$#,##0.00'
-            }
-        }
-        
-        # Apply to data rows only (row 2 to data_rows+1)
-        if data_rows > 0:
-            worksheet.format(f'B2:D{data_rows + 1}', currency_format)
-
-        # Add borders to the data table
-        border_format = {
-            'borders': {
-                'top': {'style': 'SOLID'},
-                'bottom': {'style': 'SOLID'},
-                'left': {'style': 'SOLID'},
-                'right': {'style': 'SOLID'}
-            }
-        }
-        
-        # Apply borders to data range
-        if data_rows > 0:
-            worksheet.format(f'A1:D{data_rows + 1}', border_format)
-
-        # Freeze header row
-        worksheet.freeze(rows=1)
-
-        # Auto-resize columns for better readability
-        worksheet.columns_auto_resize(1, 4)
-
-        logger.debug("Applied formatting to Net Worth History sheet.")
-
-    except Exception as e:
-        logger.warning(f"Failed to format Net Worth History sheet: {e}")
-
-
 def create_net_worth_chart(worksheet, data_rows: int) -> None:
     """
     Create a line chart for net worth history on the worksheet.
@@ -698,14 +548,6 @@ def export_to_sheets(dry_run: bool = DRY_RUN) -> dict:
 
     write_rows_to_sheet(worksheet, account_balances_rows)
     logger.info(f"Updated 'Account Balances' sheet with {len(account_balances_rows) - 1} row(s).")
-    
-    # Apply formatting to the sheet
-    # Calculate data rows (actual account data, excluding header, empty, and summary rows)
-    # Structure: header + data_rows + empty + 3 summary = total rows
-    total_rows = len(account_balances_rows)
-    data_rows = total_rows - 5  # header(1) + empty(1) + summary(3) = 5
-    if data_rows > 0:
-        format_account_balances_sheet(worksheet, data_rows)
 
     # Export Net Worth History
     net_worth_rows = build_net_worth_rows(net_worth)
@@ -720,8 +562,6 @@ def export_to_sheets(dry_run: bool = DRY_RUN) -> dict:
     
     # Apply formatting to the sheet
     data_rows = len(net_worth_rows) - 1  # Exclude header
-    if data_rows > 0:
-        format_net_worth_sheet(worksheet, data_rows)
 
     return {
         'account_balances': len(account_balances_rows) - 1,

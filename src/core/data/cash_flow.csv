@@ -2,11 +2,11 @@ Date,Account,Description,Category,Amount
 2026-07-23,Bilt Obsidian Card ••2089,Cic Food Court,Restaurants & Bars,-11.41
 2026-07-23,Bilt Obsidian Card ••2089,Chipotle Mexican Grill,Restaurants & Bars,-3.46
 2026-07-22,Bilt Obsidian Card ••2089,Backyard Brew,Restaurants & Bars,-17.37
-2026-07-22,Bilt Obsidian Card ••2089,Golden Cow Creamery,Other,-14.09
-2026-07-22,Bilt Obsidian Card ••2089,Paco's Tacos & Tequila,Other,-61.0
+2026-07-22,Bilt Obsidian Card ••2089,Golden Cow Creamery,Restaurants & Bars,-14.09
+2026-07-22,Bilt Obsidian Card ••2089,Paco's Tacos & Tequila,Restaurants & Bars,-61.0
 2026-07-21,Bilt Obsidian Card ••2089,Distro,Restaurants & Bars,-32.31
 2026-07-21,Bilt Obsidian Card ••2089,Drink Lmnt,Health & Fitness,-119.34
-2026-07-21,Bilt Obsidian Card ••2089,Telos Corporation,Shopping,-85.0
+2026-07-21,Bilt Obsidian Card ••2089,Telos Corporation,Transportation,-85.0
 2026-07-21,Bilt Obsidian Card ••2089,Two Scoops Creamery Plaza Midwood,Restaurants & Bars,-32.89
 2026-07-19,Bilt Obsidian Card ••2089,AMC Theatres,Entertainment,-24.75
 2026-07-19,Bilt Obsidian Card ••2089,Summit Coffee,Restaurants & Bars,-4.37
@@ -15,7 +15,7 @@ Date,Account,Description,Category,Amount
 2026-07-18,Bilt Obsidian Card ••2089,Ed's Tavern,Restaurants & Bars,-165.0
 2026-07-18,Bilt Obsidian Card ••2089,Green Brothers Juice,Restaurants & Bars,-11.14
 2026-07-18,Bilt Obsidian Card ••2089,Monday Night Brewing,Restaurants & Bars,-8.37
-2026-07-18,Bilt Obsidian Card ••2089,Pins Mechanical,Entertainment,-11.08
+2026-07-18,Bilt Obsidian Card ••2089,Pins Mechanical,Restaurants & Bars,-11.08
 2026-07-17,Bilt Obsidian Card ••2089,Whole Foods,Groceries,-84.81
 2026-07-16,Bilt Obsidian Card ••2089,Charlotte Running Company,Shopping,-41.14
 2026-07-16,Bilt Obsidian Card ••2089,Distro,Restaurants & Bars,-24.09
@@ -24,13 +24,15 @@ Date,Account,Description,Category,Amount
 2026-07-13,Bilt Obsidian Card ••2089,Harris Teeter,Groceries,-98.1
 2026-07-13,Bilt Obsidian Card ••2089,Lyft,Transportation,-8.98
 2026-07-12,Bilt Obsidian Card ••2089,Anthropologie,Shopping,126.56
-2026-07-12,Bilt Obsidian Card ••2089,Black Rifle Coffee Company,Restaurants & Bars,-17.33
+2026-07-12,Bilt Obsidian Card ••2089,Black Rifle Coffee Company,Groceries,-17.33
 2026-07-12,Bilt Obsidian Card ••2089,Boem,Transportation,-109.12
 2026-07-12,Bilt Obsidian Card ••2089,Selwyn Avenue Pub,Restaurants & Bars,-20.0
 2026-07-12,Bilt Obsidian Card ••2089,Selwyn Avenue Pub,Restaurants & Bars,-60.29
 2026-07-11,Bilt Obsidian Card ••2089,Amazon,Shopping,-27.54
 2026-07-11,Bilt Obsidian Card ••2089,Amazon,Shopping,-48.2
 2026-07-10,Bilt Obsidian Card ••2089,Harris Teeter,Groceries,-46.96
+2026-07-09,Bilt Obsidian Card ••2089,Amazon,Shopping,-4.0
+2026-07-09,Bilt Obsidian Card ••2089,Amazon,Shopping,-37.54
 2026-07-09,Bilt Obsidian Card ••2089,Chick-fil-A,Restaurants & Bars,-13.86
 2026-07-08,Bilt Obsidian Card ••2089,Lyft,Transportation,-14.93
 2026-07-08,Bilt Obsidian Card ••2089,Naked Farmer,Restaurants & Bars,-37.91
@@ -45,18 +47,18 @@ Date,Account,Description,Category,Amount
 2026-07-05,Bilt Obsidian Card ••2089,Helopay,Restaurants & Bars,-20.79
 2026-07-05,Bilt Obsidian Card ••2089,Szimpla Kert,Shopping,-8.61
 2026-07-05,Bilt Obsidian Card ••2089,Szimpla Kert,Shopping,-15.15
-2026-07-05,Bilt Obsidian Card ••2089,W Budapest Fb,Travel,-52.18
+2026-07-05,Bilt Obsidian Card ••2089,W Budapest Fb,Restaurants & Bars,-52.18
 2026-07-04,Bilt Obsidian Card ••2089,Cooltour Bar,Restaurants & Bars,-10.31
 2026-07-04,Bilt Obsidian Card ••2089,Simplep,Entertainment,-110.27
 2026-07-03,Bilt Obsidian Card ••2089,Interspar Dankt,Groceries,-6.83
 2026-07-02,Bilt Obsidian Card ••2089,Bilt Housing Payment,Rent & Utilities,-2415.76
 2026-07-01,Bilt Obsidian Card ••2089,Festung K2,Shopping,-1.14
 2026-07-01,Bilt Obsidian Card ••2089,Peter's Seasons,Restaurants & Bars,-82.5
-2026-06-30,Bilt Obsidian Card ••2089,Offerl Mariahilfer S,Other,-84.4
+2026-06-30,Bilt Obsidian Card ••2089,Offerl Mariahilfer S,Restaurants & Bars,-84.4
 2026-06-30,Bilt Obsidian Card ••2089,Paluby Vozu Cd,Shopping,-12.87
 2026-06-30,Bilt Obsidian Card ••2089,Uber,Transportation,-10.17
-2026-06-28,Bilt Obsidian Card ••2089,Hrad ¿ Skp Apelace,Other,-3.77
-2026-06-28,Bilt Obsidian Card ••2089,Hrad ¿ Skp Apelace,Other,-4.62
+2026-06-28,Bilt Obsidian Card ••2089,Hrad ¿ Skp Apelace,Restaurants & Bars,-3.77
+2026-06-28,Bilt Obsidian Card ••2089,Hrad ¿ Skp Apelace,Restaurants & Bars,-4.62
 2026-06-28,Bilt Obsidian Card ••2089,Lokal Gptom,Restaurants & Bars,-163.32
 2026-06-28,Bilt Obsidian Card ••2089,McDonald's,Restaurants & Bars,-11.83
 2026-06-27,Bilt Obsidian Card ••2089,Au Gourmand,Restaurants & Bars,-46.99
@@ -95,9 +97,9 @@ Date,Account,Description,Category,Amount
 2026-06-18,Bilt Obsidian Card ••2089,Whole Foods,Groceries,-70.45
 2026-06-17,Bilt Obsidian Card ••2089,Summit Coffee,Restaurants & Bars,-6.15
 2026-06-16,Bilt Obsidian Card ••2089,Cic Food Court,Restaurants & Bars,-6.75
-2026-06-16,Bilt Obsidian Card ••2089,Jeni's Splendid Ice Creams,Restaurants & Bars,-9.2
 2026-06-16,Bilt Obsidian Card ••2089,Harris Teeter,Groceries,-10.34
 2026-06-16,Bilt Obsidian Card ••2089,Harris Teeter,Groceries,-80.03
+2026-06-16,Bilt Obsidian Card ••2089,Jeni's Splendid Ice Creams,Restaurants & Bars,-9.2
 2026-06-15,Bilt Obsidian Card ••2089,Elevel Eleven Bakery,Restaurants & Bars,-73.88
 2026-06-15,Bilt Obsidian Card ••2089,Yafo Kitchen,Restaurants & Bars,-50.65
 2026-06-08,Bilt Obsidian Card ••2089,Amazon,Shopping,-22.75
@@ -121,7 +123,7 @@ Date,Account,Description,Category,Amount
 2026-06-02,Bilt Obsidian Card ••2089,Summit Coffee,Restaurants & Bars,-6.15
 2026-06-01,Bilt Obsidian Card ••2089,Green Brothers Juice,Restaurants & Bars,-22.55
 2026-05-31,Bilt Obsidian Card ••2089,Astoria Cafe,Restaurants & Bars,-7.97
-2026-05-31,Bilt Obsidian Card ••2089,Black Rifle Coffee Company,Restaurants & Bars,-17.33
+2026-05-31,Bilt Obsidian Card ••2089,Black Rifle Coffee Company,Groceries,-17.33
 2026-05-31,Bilt Obsidian Card ••2089,Carolinas Medical Center,Health & Fitness,233.79
 2026-05-31,Bilt Obsidian Card ••2089,Chapter,Shopping,-148.4
 2026-05-31,Bilt Obsidian Card ••2089,Club West Brewing,Restaurants & Bars,-26.74
@@ -171,7 +173,7 @@ Date,Account,Description,Category,Amount
 2026-05-12,Bilt Obsidian Card ••2089,Drift Coffee 10 Sh,Restaurants & Bars,-6.98
 2026-05-12,Bilt Obsidian Card ••2089,Summit Coffee,Restaurants & Bars,-3.25
 2026-05-11,Bilt Obsidian Card ••2089,Drink Lmnt,Health & Fitness,-119.34
-2026-05-10,Bilt Obsidian Card ••2089,Black Rifle Coffee Company,Restaurants & Bars,-17.33
+2026-05-10,Bilt Obsidian Card ••2089,Black Rifle Coffee Company,Groceries,-17.33
 2026-05-07,Bilt Obsidian Card ••2089,Two Scoops Creamery Plaza Midwood,Restaurants & Bars,-13.74
 2026-05-05,Bilt Obsidian Card ••2089,Lyft,Transportation,-12.99
 2026-05-05,Bilt Obsidian Card ••2089,Reid's Fine Foods,Groceries,-3.75
@@ -193,8 +195,8 @@ Date,Account,Description,Category,Amount
 2026-05-02,Bilt Obsidian Card ••2089,Chef Alyssa's Kitchen,Restaurants & Bars,-44.22
 2026-05-02,Bilt Obsidian Card ••2089,Quince,Shopping,-170.7
 2026-04-30,Bilt Obsidian Card ••2089,Cic Food Court,Restaurants & Bars,-3.84
-2026-04-30,Bilt Obsidian Card ••2089,Walgreens,Health & Fitness,-35.89
 2026-04-30,Bilt Obsidian Card ••2089,Velvet Taco,Restaurants & Bars,-15.07
+2026-04-30,Bilt Obsidian Card ••2089,Walgreens,Health & Fitness,-35.89
 2026-04-29,Bilt Obsidian Card ••2089,Summit Coffee,Restaurants & Bars,-8.13
 2026-04-28,Bilt Obsidian Card ••2089,Chomps,Groceries,-46.75
 2026-04-28,Bilt Obsidian Card ••2089,Lyft,Transportation,-12.93
@@ -217,7 +219,7 @@ Date,Account,Description,Category,Amount
 2026-04-20,Bilt Obsidian Card ••2089,Publix,Groceries,-154.82
 2026-04-20,Bilt Obsidian Card ••2089,Unity Farms,Groceries,-31.36
 2026-04-19,Bilt Obsidian Card ••2089,Amazon,Shopping,-16.61
-2026-04-19,Bilt Obsidian Card ••2089,Black Rifle Coffee Company,Restaurants & Bars,-17.33
+2026-04-19,Bilt Obsidian Card ••2089,Black Rifle Coffee Company,Groceries,-17.33
 2026-04-19,Bilt Obsidian Card ••2089,Dukes Bread,Restaurants & Bars,-9.0
 2026-04-19,Bilt Obsidian Card ••2089,Gails Garden & Bakery,Restaurants & Bars,-8.32
 2026-04-19,Bilt Obsidian Card ••2089,J4 Cattle Company,Groceries,-44.06
@@ -252,7 +254,7 @@ Date,Account,Description,Category,Amount
 2026-04-01,Bilt Obsidian Card ••2089,Alo Yoga,Shopping,79.37
 2026-03-31,Bilt Obsidian Card ••2089,Dick's Sporting Goods,Shopping,-75.06
 2026-03-30,Bilt Obsidian Card ••2089,Treaty Oak Revival,Restaurants & Bars,-139.14
-2026-03-29,Bilt Obsidian Card ••2089,Black Rifle Coffee Company,Restaurants & Bars,-17.33
+2026-03-29,Bilt Obsidian Card ••2089,Black Rifle Coffee Company,Groceries,-17.33
 2026-03-29,Bilt Obsidian Card ••2089,Lyft,Transportation,-22.94
 2026-03-29,Bilt Obsidian Card ••2089,South End Nc-anf,Shopping,-102.96
 2026-03-29,Bilt Obsidian Card ••2089,Sunflour Baking Company,Restaurants & Bars,-5.36
@@ -278,6 +280,7 @@ Date,Account,Description,Category,Amount
 2026-04-12,CREDIT CARD ••8858,Costco,Groceries,-256.25
 2026-04-12,CREDIT CARD ••8858,Jersey Mike's Subs,Restaurants & Bars,-29.58
 2026-04-03,CREDIT CARD ••8858,Costco,Gas,-41.56
+2026-07-23,Blue Cash Everyday® ••1000,Sunoco,Gas,-37.87
 2026-07-19,Blue Cash Everyday® ••1000,Food Lion,Groceries,-96.1
 2026-07-15,Blue Cash Everyday® ••1000,Primal Harvest,Health & Fitness,-61.77
 2026-07-10,Blue Cash Everyday® ••1000,Circle K,Gas,-26.7
@@ -323,7 +326,6 @@ Date,Account,Description,Category,Amount
 2026-03-29,Blue Cash Everyday® ••1000,Whole Foods,Groceries,-144.79
 2026-03-27,Blue Cash Everyday® ••1000,Speedway,Gas,-58.05
 2026-07-23,6 MONTH CERTIFICATE ••2615,Deposit Dividend 3.930% Annual Percentage Yield Earned 4.01% from 07/01/26 through 07/22/26,Other Income,38.6
-2026-07-23,6 MONTH CERTIFICATE ••2615,Renewed at 3.930% to mature 01/23/27,Entertainment,-0.0
 2026-07-20,GO GREEN CHECKING ••2615,Deposit ACH 840100101 JC9S5,Other Income,0.01
 2026-07-20,GO GREEN CHECKING ••2615,Deposit ACH 840100101 JC9S6,Other Income,0.18
 2026-07-20,GO GREEN CHECKING ••2615,Venmo,Other Income,1249.0

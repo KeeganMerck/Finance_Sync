@@ -437,7 +437,6 @@ def generate_all_update_link_tokens():
                         Products('investments'),
                         Products('liabilities'),
                         Products('identity'),
-                        Products('assets')
                     ]
                 )
 
@@ -525,7 +524,6 @@ def generate_update_link_token():
                 Products('identity'),           # User identity information
                 Products('signal'),             # Transaction scores/risk analysis
                 Products('statements'),         # Account statements
-                Products('assets'),             # Asset reports
             ]
         )
 

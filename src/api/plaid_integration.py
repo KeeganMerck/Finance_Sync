@@ -439,7 +439,7 @@ def create_link_token(user_id: str = 'finance_sync_user') -> str:
                 Products('investments'),        # Investment holdings and transactions
                 Products('liabilities'),        # Loan/credit data (interest rates, payments)
                 Products('identity'),           # User identity information
-                Products('assets'),             # Asset reports
+                Products('signal'),             # Transaction scores/risk analysis
             ]
         )
 

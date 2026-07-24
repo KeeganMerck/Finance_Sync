@@ -37,7 +37,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import database as db_module
-from database import (
+from modules.database import (
     init_db,
     upsert_transaction,
     upsert_transactions,

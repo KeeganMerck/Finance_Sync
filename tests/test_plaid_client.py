@@ -24,9 +24,10 @@ from unittest.mock import Mock, patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+##TODO FIX IMPORTS
 import plaid_integration
 import database as db_module
-from database import get_latest_transaction_date, init_db
+from modules.database import get_latest_transaction_date, init_db
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -380,7 +381,7 @@ class TestGetLatestTransactionDate(unittest.TestCase):
 
     def test_returns_max_date_when_data_exists(self):
         """Should return the maximum date in the table."""
-        from database import upsert_transactions
+        from modules.database import upsert_transactions
 
         transactions = [
             {
@@ -429,7 +430,7 @@ class TestGetLatestTransactionDate(unittest.TestCase):
 
     def test_returns_string_type(self):
         """Result should be a string (ISO 8601 date) or None."""
-        from database import upsert_transactions
+        from modules.database import upsert_transactions
 
         # Test with empty database
         result = get_latest_transaction_date(self.db_path)

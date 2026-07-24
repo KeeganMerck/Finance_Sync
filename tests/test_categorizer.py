@@ -20,7 +20,7 @@ import unittest
 # Allow imports from the project root regardless of where tests are run from
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from categorizer import (
+from modules.categorizer import (
     CategoryRule,
     apply_rules,
     categorize_transactions,

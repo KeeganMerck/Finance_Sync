@@ -13,14 +13,15 @@ Design principle:
   - Returns today's date as snapshot_date for all fetched balances
 """
 
+import re
 import logging
 from pathlib import Path
 from datetime import date
-import re
 from typing import List, Optional
 
-from config import USE_PLAID, DATABASE_PATH, ENABLE_DATABASE, DRY_RUN, GOOGLE_SHEETS_ENABLED, GOOGLE_SHEETS_SPREADSHEET_NAME
-import plaid_integration as plaid_integration
+from ..core.config import USE_PLAID, DATABASE_PATH, ENABLE_DATABASE, DRY_RUN, GOOGLE_SHEETS_ENABLED, GOOGLE_SHEETS_SPREADSHEET_NAME, GOOGLE_SHEETS_CREDENTIALS_PATH
+from .database import upsert_snapshots as db_upsert_snapshots, get_latest_balances as db_get_latest_balances, get_balance_history as db_get_balance_history, get_net_worth_history as db_get_net_worth_history
+from ..api import plaid_integration
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -186,8 +187,6 @@ def upsert_snapshots(snapshots: list[dict], db_path: Optional[Path] = None) -> i
         logger.debug("Database disabled — skipping snapshot upsert.")
         return 0
 
-    from database import upsert_snapshots as db_upsert_snapshots
-
     if db_path is None:
         db_path = DATABASE_PATH
 
@@ -211,8 +210,6 @@ def get_latest_balances(db_path: Optional[Path] = None) -> list[dict]:
     if not ENABLE_DATABASE:
         logger.debug("Database disabled — get_latest_balances returning empty list.")
         return []
-
-    from database import get_latest_balances as db_get_latest_balances
 
     if db_path is None:
         db_path = DATABASE_PATH
@@ -238,8 +235,6 @@ def get_balance_history(days: int = 90, db_path: Optional[Path] = None) -> list[
     if not ENABLE_DATABASE:
         logger.debug("Database disabled — get_balance_history returning empty list.")
         return []
-
-    from database import get_balance_history as db_get_balance_history
 
     if db_path is None:
         db_path = DATABASE_PATH
@@ -270,8 +265,6 @@ def get_net_worth_history(db_path: Optional[Path] = None) -> list[dict]:
     if not ENABLE_DATABASE:
         logger.debug("Database disabled — get_net_worth_history returning empty list.")
         return []
-
-    from database import get_net_worth_history as db_get_net_worth_history
 
     if db_path is None:
         db_path = DATABASE_PATH
@@ -454,8 +447,6 @@ def _get_client():
     """Authenticate with Google Sheets using the service account JSON file."""
     if gspread is None or Credentials is None:
         raise RuntimeError('gspread and google-auth are required for Google Sheets export')
-
-    from config import GOOGLE_SHEETS_CREDENTIALS_PATH
 
     credentials_path = GOOGLE_SHEETS_CREDENTIALS_PATH
     if not credentials_path.exists():

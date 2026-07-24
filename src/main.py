@@ -25,13 +25,13 @@ import logging
 import sys
 from datetime import datetime
 
-from config import DRY_RUN, ENABLE_DATABASE, GOOGLE_SHEETS_ENABLED, LOG_PATH, USE_PLAID
-from sync import fetch_transactions
-from categorizer import categorize_transactions, load_rules
-from database import get_all_transactions, init_db, upsert_transactions
-from export import run_exports
-from google_sheets import update_google_sheet
-from balance import fetch_balances, upsert_snapshots as upsert_balance_snapshots, export_to_sheets as export_balances_to_sheets
+from .core.config import DRY_RUN, ENABLE_DATABASE, GOOGLE_SHEETS_ENABLED, LOG_PATH, USE_PLAID
+from .modules.sync import fetch_transactions
+from .modules.categorizer import categorize_transactions, load_rules
+from .modules.database import get_all_transactions, init_db, upsert_transactions
+from .modules.export import run_exports
+from .modules.google_sheets import update_google_sheet
+from .modules.balance import fetch_balances, upsert_snapshots as upsert_balance_snapshots, export_to_sheets as export_balances_to_sheets
 
 
 # ─── Logging Configuration ─────────────────────────────────────────────────────

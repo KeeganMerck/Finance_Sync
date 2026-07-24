@@ -44,12 +44,12 @@ Design notes:
 
 import csv
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from config import RULES_CSV_PATH
-from normalization import normalize_transactions
+from ..core.config import RULES_CSV_PATH
+from .normalization import normalize_transactions
 
 logger = logging.getLogger(__name__)
 

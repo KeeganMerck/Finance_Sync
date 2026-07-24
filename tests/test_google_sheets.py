@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from google_sheets import build_sheet_rows, write_rows_to_sheet
+from modules.google_sheets import build_sheet_rows, write_rows_to_sheet
 
 
 class FakeWorksheet:

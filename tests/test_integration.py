@@ -39,9 +39,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import database as db_module
 from normalization import normalize_transactions
-from categorizer import CategoryRule, categorize_transactions, resolve_category
-from export import run_exports, CASH_FLOW_COLUMNS
-from database import (
+from modules.categorizer import CategoryRule, categorize_transactions, resolve_category
+from modules.export import run_exports, CASH_FLOW_COLUMNS
+from modules.database import (
     init_db,
     upsert_transactions,
     get_all_transactions,

@@ -44,7 +44,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator, Optional
 
-from config import DATABASE_PATH, ENABLE_DATABASE
+from ..core.config import DATABASE_PATH, ENABLE_DATABASE
 
 logger = logging.getLogger(__name__)
 

@@ -34,7 +34,7 @@ echo  %DATE% %TIME%
 echo ============================================================
 echo.
 
-python main.py
+python -m src.main
 
 set SYNC_RESULT=%errorlevel%
 

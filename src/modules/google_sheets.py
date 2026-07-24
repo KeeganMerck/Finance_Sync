@@ -10,19 +10,14 @@ can call one function to refresh the sheet from the current transaction data.
 import logging
 from typing import Iterable, List, Optional
 
-from categorizer import format_category_for_display, resolve_category
-from config import GOOGLE_SHEETS_CREDENTIALS_PATH, GOOGLE_SHEETS_SPREADSHEET_NAME, GOOGLE_SHEETS_WORKSHEET_NAME
-from database import get_all_transactions
+from ..core.config import GOOGLE_SHEETS_CREDENTIALS_PATH, GOOGLE_SHEETS_SPREADSHEET_NAME, GOOGLE_SHEETS_WORKSHEET_NAME
+from .categorizer import format_category_for_display, resolve_category
+from .database import get_all_transactions
+
+import gspread
+from google.oauth2.service_account import Credentials
 
 logger = logging.getLogger(__name__)
-
-try:
-    import gspread
-    from google.oauth2.service_account import Credentials
-except ImportError:  # pragma: no cover - optional dependency may not be installed
-    gspread = None
-    Credentials = None
-
 
 SHEET_HEADERS = ['Date', 'Account', 'Description', 'Category', 'Amount']
 

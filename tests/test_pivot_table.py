@@ -8,7 +8,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database import get_all_transactions
+from modules.database import get_all_transactions
 from datetime import datetime
 from collections import defaultdict
 
@@ -16,7 +16,7 @@ def test_pivot_table():
     """Test the pivot table aggregation."""
     print("Testing pivot table aggregation...")
     
-    # Get all transactions from database
+    # Get all transactions from modules.database
     transactions = get_all_transactions()
     
     # Filter to only non-excluded transactions with user_category

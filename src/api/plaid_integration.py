@@ -27,7 +27,7 @@ import os
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from config import PLAID_ENV
+from ..core.config import PLAID_ENV, PLAID_CLIENT_ID, PLAID_SECRET
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +54,6 @@ def get_plaid_client():
     from plaid.api_client import ApiClient          # <-- Note the change to api_client
     from plaid.configuration import Configuration   # <-- Note the change to configuration
 
-    from config import PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENV
-
     if not PLAID_CLIENT_ID or not PLAID_SECRET or not PLAID_ENV:
         raise ValueError(
             "Plaid credentials not configured. "
@@ -75,7 +73,7 @@ def get_plaid_client():
         )
 
     host = env_map[PLAID_ENV]
-    logger.info(f"Initializing Plaid client for environment: {PLAID_ENV} ({host})")
+    # logger.info(f"Initializing Plaid client for environment: {PLAID_ENV} ({host})")
 
     configuration = Configuration(
         host=host,

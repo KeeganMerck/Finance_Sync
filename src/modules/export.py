@@ -31,10 +31,9 @@ Dry run support:
 import csv
 import logging
 from pathlib import Path
-from typing import Optional
 
-from categorizer import format_category_for_display, resolve_category
-from config import CASH_FLOW_CSV_PATH, RAW_CSV_PATH, DRY_RUN
+from .categorizer import format_category_for_display, resolve_category
+from ..core.config import CASH_FLOW_CSV_PATH, RAW_CSV_PATH, DRY_RUN
 
 logger = logging.getLogger(__name__)
 

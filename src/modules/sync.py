@@ -14,7 +14,7 @@ import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from config import (
+from ..core.config import (
     FULL_SYNC_LOOKBACK_DAYS,
     INCREMENTAL_SYNC_BUFFER_DAYS,
     MOCK_JSON_PATH,
@@ -22,8 +22,8 @@ from config import (
     SYNC_MODE,
     USE_PLAID,
 )
-import plaid_integration
-from database import get_latest_transaction_date
+from ..api import plaid_integration
+from .database import get_latest_transaction_date
 
 logger = logging.getLogger(__name__)
 
@@ -167,10 +167,6 @@ def _fetch_from_plaid() -> list[dict]:
             else:
                 # Full sync mode — fetch from a configurable lookback window
                 start_date = end_date - timedelta(days=FULL_SYNC_LOOKBACK_DAYS)
-                logger.info(
-                    f"  Full sync from {start_date} "
-                    f"({FULL_SYNC_LOOKBACK_DAYS} days back)"
-                )
 
             # ─── Refresh Plaid data before fetching history ───────────────────
             if PLAID_FORCE_REFRESH:
@@ -211,15 +207,6 @@ def _fetch_from_plaid() -> list[dict]:
             dates = [txn.get('date') for txn in plaid_transactions if txn.get('date')]
             oldest_date = min(dates) if dates else None
             newest_date = max(dates) if dates else None
-
-            if oldest_date and start_date:
-                oldest_dt = datetime.strptime(oldest_date, '%Y-%m-%d').date()
-                if oldest_dt > start_date + timedelta(days=90):
-                    logger.warning(
-                        f"  {institution_name}: returned history from {oldest_date} to {newest_date or 'n/a'}, "
-                        f"which is later than the requested window starting {start_date}. "
-                        "This can indicate the institution or token only exposes recent history."
-                    )
 
             logger.info(
                 f"  {institution_name}: fetched {len(plaid_transactions)} transaction(s)"

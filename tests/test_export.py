@@ -25,12 +25,12 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import export as export_module
-from export import (
+from modules.export import (
     CASH_FLOW_COLUMNS,
     RAW_COLUMNS,
     run_exports,
 )
-from categorizer import resolve_category
+from modules.categorizer import resolve_category
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────

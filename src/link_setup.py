@@ -28,8 +28,8 @@ from datetime import datetime
 
 from flask import Flask, render_template_string, request, jsonify
 
-from config import PLAID_ENV
-import plaid_integration
+from .core.config import PLAID_ENV
+from .api import plaid_integration
 
 # Configure logging for the setup process
 logging.basicConfig(

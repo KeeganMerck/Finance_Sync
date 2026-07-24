@@ -58,7 +58,7 @@ RULES_CSV_PATH = RULES_DIR / 'category_rules.csv'
 LOG_PATH = LOGS_DIR / 'sync.log'
 
 # Google Sheets export settings
-GOOGLE_SHEETS_CREDENTIALS_PATH = PROJECT_ROOT / 'google_credentials.json'
+GOOGLE_SHEETS_CREDENTIALS_PATH = Path(__file__).parent.parent.parent.resolve() / 'google_credentials.json'
 GOOGLE_SHEETS_SPREADSHEET_NAME = 'PLAID - K&D Cash Flow'
 GOOGLE_SHEETS_WORKSHEET_NAME = 'Cash Flow Table'
 GOOGLE_SHEETS_ENABLED: bool = os.getenv('GOOGLE_SHEETS_ENABLED', 'true').lower() == 'true'

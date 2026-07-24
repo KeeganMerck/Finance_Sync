@@ -63,47 +63,64 @@ def fetch_balances() -> list[dict]:
 
     logger.info("Fetching account balances from Plaid...")
 
-    access_tokens = plaid_integration.get_access_tokens()
-    if not access_tokens:
-        logger.warning("No Plaid access tokens configured — returning empty balance list.")
+    plaid_profiles = plaid_integration.get_plaid_profiles()
+    if not plaid_profiles:
+        logger.warning("No Plaid profiles configured - returning empty balance list.")
         return []
 
     all_balances = []
     snapshot_date = date.today().isoformat()
 
-    for institution_name, access_token in access_tokens.items():
-        try:
-            logger.info(f"Processing institution for balances: {institution_name}")
-
-            # Fetch accounts with balance information
-            accounts = _get_accounts_with_balances(access_token)
-
-            for acct in accounts:
-                balance_dict = {
-                    'snapshot_date': snapshot_date,
-                    'account_id': acct['account_id'],
-                    'account_name': f"{acct['name']} ••{acct['mask']}",
-                    'institution': institution_name,
-                    'account_type': acct['type'],
-                    'account_subtype': acct['subtype'],
-                    'current_balance': acct.get('current_balance'),
-                    'available_balance': acct.get('available_balance'),
-                    'credit_limit': acct.get('credit_limit'),  # None for non-credit accounts
-                    'currency': acct.get('currency', 'USD'),
-                }
-                all_balances.append(balance_dict)
-
-            logger.debug(f"  Fetched {len(accounts)} account balance(s) from {institution_name}.")
-
-        except Exception as e:
-            logger.exception(f"Non-fatal: failed to fetch balances for {institution_name}: {e}")
+    for profile in plaid_profiles:
+        access_tokens = plaid_integration.get_access_tokens(profile)
+        if not access_tokens:
+            logger.warning(
+                f"No Plaid access tokens configured for profile '{profile.name}' "
+                f"- expected {profile.token_prefix}*."
+            )
             continue
+
+        for institution_name, access_token in access_tokens.items():
+            try:
+                logger.info(
+                    f"Processing institution for balances: "
+                    f"{profile.name}/{institution_name}"
+                )
+
+                accounts = _get_accounts_with_balances(access_token, profile)
+
+                for acct in accounts:
+                    balance_dict = {
+                        'snapshot_date': snapshot_date,
+                        'account_id': acct['account_id'],
+                        'account_name': f"{acct['name']} --{acct['mask']}",
+                        'institution': institution_name,
+                        'account_type': acct['type'],
+                        'account_subtype': acct['subtype'],
+                        'current_balance': acct.get('current_balance'),
+                        'available_balance': acct.get('available_balance'),
+                        'credit_limit': acct.get('credit_limit'),
+                        'currency': acct.get('currency', 'USD'),
+                    }
+                    all_balances.append(balance_dict)
+
+                logger.debug(
+                    f"  Fetched {len(accounts)} account balance(s) "
+                    f"from {profile.name}/{institution_name}."
+                )
+
+            except Exception as e:
+                logger.exception(
+                    f"Non-fatal: failed to fetch balances for "
+                    f"{profile.name}/{institution_name}: {e}"
+                )
+                continue
 
     logger.info(f"Fetched {len(all_balances)} total account balance snapshot(s).")
     return all_balances
 
 
-def _get_accounts_with_balances(access_token: str) -> list[dict]:
+def _get_accounts_with_balances(access_token: str, profile=None) -> list[dict]:
     """
     Fetch accounts with balance information from Plaid.
 
@@ -122,16 +139,14 @@ def _get_accounts_with_balances(access_token: str) -> list[dict]:
     try:
         from plaid.model.accounts_balance_get_request import AccountsBalanceGetRequest
 
-        client = plaid_integration.get_plaid_client()
+        client = plaid_integration.get_plaid_client(profile)
         request = AccountsBalanceGetRequest(access_token=access_token)
         response = client.accounts_balance_get(request)
 
         accounts = []
         for acct in response['accounts']:
-            # Extract balance information from the Plaid response
             balances = acct.get('balances', {})
 
-            # Use Plaid's provided values directly
             current_balance = balances.get('current')
             available_balance = balances.get('available')
             credit_limit = balances.get('limit')

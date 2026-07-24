@@ -45,6 +45,30 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 
+def _get_requested_profile():
+    """Return the Plaid profile requested by query/body, or the default profile."""
+    requested_name = None
+    if request.method == 'GET':
+        requested_name = request.args.get('profile')
+    else:
+        payload = request.get_json(silent=True) or {}
+        requested_name = payload.get('profile')
+
+    profiles = plaid_integration.get_plaid_profiles()
+    if not profiles:
+        return plaid_integration.get_default_plaid_profile()
+
+    if not requested_name:
+        return profiles[0]
+
+    requested_name = requested_name.strip().upper()
+    for profile in profiles:
+        if profile.name.upper() == requested_name or profile.prefix.upper() == requested_name:
+            return profile
+
+    raise ValueError(f"Unknown Plaid profile: {requested_name}")
+
+
 # ─── HTML Template for Plaid Link UI ───────────────────────────────────────
 
 HTML_TEMPLATE = """
@@ -334,7 +358,8 @@ def get_link_token():
     Called by the frontend when the user clicks "Open Plaid Link".
     """
     try:
-        link_token = plaid_integration.create_link_token()
+        profile = _get_requested_profile()
+        link_token = plaid_integration.create_link_token(profile=profile)
         return jsonify({'link_token': link_token})
     except Exception as e:
         logger.exception("Failed to create link token")
@@ -359,7 +384,8 @@ def exchange_public_token():
             }), 400
 
         # Exchange public token for access token
-        access_token = plaid_integration.item_public_token_exchange(public_token)
+        profile = _get_requested_profile()
+        access_token = plaid_integration.item_public_token_exchange(public_token, profile)
 
         # Print the access token clearly to the terminal so the user can copy it
         print("\n" + "="*70)
@@ -368,13 +394,13 @@ def exchange_public_token():
         print(f"Access Token: {access_token}")
         print("-"*70)
         print("Copy this token and add it to your .env file as:")
-        print(f"  PLAID_{PLAID_ENV.upper()}_TOKEN_<INSTITUTIONNAME>=<token>")
+        print(f"  {profile.token_prefix}<INSTITUTIONNAME>=<token>")
         print("where <INSTITUTIONNAME> is the name of the bank (e.g., CHASE, AMEX).")
         print("="*70 + "\n")
 
         return jsonify({
             'success': True,
-            'message': f'Access token obtained! Check the terminal for details.',
+            'message': f'Access token obtained for {profile.name}! Check the terminal for details.',
             'access_token': access_token,  # Also in JSON for reference
         })
 
@@ -393,7 +419,8 @@ def generate_all_update_link_tokens():
     update tokens for each institution using working dictionary parameters.
     """
     try:
-        prefix = f'PLAID_{PLAID_ENV.upper()}_TOKEN_'
+        profile = _get_requested_profile()
+        prefix = profile.token_prefix
         tokens = {}
         update_tokens = {}
 
@@ -415,7 +442,7 @@ def generate_all_update_link_tokens():
         from plaid.model.products import Products
         from plaid.model.country_code import CountryCode
 
-        client = plaid_integration.get_plaid_client()
+        client = plaid_integration.get_plaid_client(profile)
 
         # Generate update tokens for each institution
         for institution_name, existing_access_token in tokens.items():
@@ -487,7 +514,8 @@ def generate_update_link_token():
             }), 400
 
         # 1. Fetch your existing access token from your environment configuration
-        env_key = f"PLAID_{PLAID_ENV.upper()}_TOKEN_{institution_name.upper()}"
+        profile = _get_requested_profile()
+        env_key = f"{profile.token_prefix}{institution_name.upper()}"
         existing_access_token = os.environ.get(env_key)
 
         if not existing_access_token:
@@ -528,7 +556,7 @@ def generate_update_link_token():
         )
 
         # 4. Generate the token from Plaid's SDK
-        client = plaid_integration.get_plaid_client()
+        client = plaid_integration.get_plaid_client(profile)
         response = client.link_token_create(link_request)
 
         print(f"\n✓ Generated Update Link Token for {institution_name.upper()}")

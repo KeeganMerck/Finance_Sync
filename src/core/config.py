@@ -13,6 +13,7 @@ To add a new setting:
 """
 
 from pathlib import Path
+from dataclasses import dataclass
 import os
 import dotenv
 
@@ -101,3 +102,107 @@ elif PLAID_ENV == 'production':
     PLAID_SECRET: str = os.getenv('PLAID_PRODUCTION_SECRET')
 else:
     PLAID_SECRET: str = os.getenv('PLAID_SECRET')  # fallback for legacy .env files
+
+
+@dataclass(frozen=True)
+class PlaidProfile:
+    """
+    One Plaid credential namespace.
+
+    prefix examples:
+      - PLAID for legacy variables like PLAID_CLIENT_ID
+      - SECONDARY_PLAID for variables like SECONDARY_PLAID_CLIENT_ID
+    """
+    name: str
+    prefix: str
+    env: str
+    client_id: str
+    secret: str
+
+    @property
+    def token_prefix(self) -> str:
+        return f"{self.prefix}_{self.env.upper()}_TOKEN_"
+
+
+def _csv_env(name: str) -> list[str]:
+    return [
+        value.strip()
+        for value in os.getenv(name, '').split(',')
+        if value.strip()
+    ]
+
+
+def _profile_prefix_from_name(name: str) -> str:
+    normalized = name.strip().upper()
+    if normalized in ('DEFAULT', 'PRIMARY', 'LEGACY', 'PLAID'):
+        return 'PLAID'
+    if normalized.endswith('_PLAID'):
+        return normalized
+    return f'{normalized}_PLAID'
+
+
+def _get_secret_for_prefix(prefix: str, env: str) -> str:
+    env_upper = (env or '').upper()
+    return (
+        os.getenv(f'{prefix}_{env_upper}_SECRET')
+        or os.getenv(f'{prefix}_SECRET')
+        or ''
+    )
+
+
+def get_plaid_profiles() -> list[PlaidProfile]:
+    """
+    Load all configured Plaid credential profiles from .env.
+
+    Supported forms:
+      1. Legacy primary profile:
+         PLAID_ENV, PLAID_CLIENT_ID, PLAID_PRODUCTION_SECRET,
+         PLAID_PRODUCTION_TOKEN_CHASE
+
+      2. Prefixed profiles, auto-detected:
+         SECONDARY_PLAID_CLIENT_ID, SECONDARY_PLAID_PRODUCTION_SECRET,
+         SECONDARY_PLAID_PRODUCTION_TOKEN_AMEX
+
+      3. Explicit profile names:
+         PLAID_PROFILES=PRIMARY,SECONDARY
+         where PRIMARY maps to PLAID_* and SECONDARY maps to SECONDARY_PLAID_*.
+    """
+    prefixes: list[str] = []
+
+    if PLAID_CLIENT_ID:
+        prefixes.append('PLAID')
+
+    for profile_name in _csv_env('PLAID_PROFILES'):
+        prefix = _profile_prefix_from_name(profile_name)
+        if prefix not in prefixes:
+            prefixes.append(prefix)
+
+    for key in os.environ:
+        if key.endswith('_PLAID_CLIENT_ID'):
+            prefix = key[:-len('_CLIENT_ID')]
+            if prefix not in prefixes:
+                prefixes.append(prefix)
+
+    profiles: list[PlaidProfile] = []
+    for prefix in prefixes:
+        if prefix == 'PLAID':
+            name = 'PRIMARY'
+            env = os.getenv('PLAID_ENV') or ''
+            client_id = os.getenv('PLAID_CLIENT_ID') or ''
+        else:
+            name = prefix[:-len('_PLAID')]
+            env = os.getenv(f'{prefix}_ENV') or os.getenv('PLAID_ENV') or ''
+            client_id = os.getenv(f'{prefix}_CLIENT_ID') or ''
+
+        env = env.strip().lower()
+        secret = _get_secret_for_prefix(prefix, env)
+        if env and client_id and secret:
+            profiles.append(PlaidProfile(
+                name=name,
+                prefix=prefix,
+                env=env,
+                client_id=client_id,
+                secret=secret,
+            ))
+
+    return profiles

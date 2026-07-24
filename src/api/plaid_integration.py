@@ -27,14 +27,37 @@ import os
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from ..core.config import PLAID_ENV, PLAID_CLIENT_ID, PLAID_SECRET
+from ..core.config import (
+    PLAID_ENV,
+    PLAID_CLIENT_ID,
+    PLAID_SECRET,
+    PlaidProfile,
+    get_plaid_profiles,
+)
 
 logger = logging.getLogger(__name__)
 
 
 # ─── Client Initialization ────────────────────────────────────────────────────
 
-def get_plaid_client():
+def _legacy_profile() -> PlaidProfile:
+    return PlaidProfile(
+        name='PRIMARY',
+        prefix='PLAID',
+        env=(PLAID_ENV or '').strip().lower(),
+        client_id=PLAID_CLIENT_ID or '',
+        secret=PLAID_SECRET or '',
+    )
+
+
+def get_default_plaid_profile() -> PlaidProfile:
+    profiles = get_plaid_profiles()
+    if profiles:
+        return profiles[0]
+    return _legacy_profile()
+
+
+def get_plaid_client(profile: Optional[PlaidProfile] = None):
     """
     Initialize and return an authenticated Plaid API client.
 
@@ -54,10 +77,13 @@ def get_plaid_client():
     from plaid.api_client import ApiClient          # <-- Note the change to api_client
     from plaid.configuration import Configuration   # <-- Note the change to configuration
 
-    if not PLAID_CLIENT_ID or not PLAID_SECRET or not PLAID_ENV:
+    profile = profile or get_default_plaid_profile()
+
+    if not profile.client_id or not profile.secret or not profile.env:
         raise ValueError(
             "Plaid credentials not configured. "
-            "Set PLAID_CLIENT_ID, PLAID_SECRET, and PLAID_ENV in your .env file."
+            "Set PLAID_CLIENT_ID, PLAID_SECRET, and PLAID_ENV in your .env file, "
+            "or configure a complete prefixed Plaid profile."
         )
 
     env_map = {
@@ -66,31 +92,31 @@ def get_plaid_client():
         'production':  'https://production.plaid.com',
     }
 
-    if PLAID_ENV not in env_map:
+    if profile.env not in env_map:
         raise ValueError(
-            f"Invalid PLAID_ENV '{PLAID_ENV}'. "
+            f"Invalid Plaid environment '{profile.env}' for profile '{profile.name}'. "
             "Must be one of: sandbox, development, production"
         )
 
-    host = env_map[PLAID_ENV]
+    host = env_map[profile.env]
     # logger.info(f"Initializing Plaid client for environment: {PLAID_ENV} ({host})")
 
     configuration = Configuration(
         host=host,
         api_key={
-            'clientId': PLAID_CLIENT_ID,
-            'secret':   PLAID_SECRET,
+            'clientId': profile.client_id,
+            'secret':   profile.secret,
         }
     )
 
     client = plaid_api.PlaidApi(ApiClient(configuration))
-    logger.debug("Plaid client initialized successfully.")
+    logger.debug(f"Plaid client initialized successfully for profile: {profile.name}")
     return client
 
 
 # ─── Access Token Management ──────────────────────────────────────────────────
 
-def get_access_tokens() -> dict[str, str]:
+def get_access_tokens(profile: Optional[PlaidProfile] = None) -> dict[str, str]:
     """
     Return a mapping of institution name to Plaid access token.
 
@@ -111,7 +137,8 @@ def get_access_tokens() -> dict[str, str]:
     Raises:
         None. Logs a warning if no tokens are configured but does not fail.
     """
-    prefix = f'PLAID_{PLAID_ENV.upper()}_TOKEN_'
+    profile = profile or get_default_plaid_profile()
+    prefix = profile.token_prefix
     tokens = {}
 
     for key, value in os.environ.items():
@@ -132,7 +159,7 @@ def get_access_tokens() -> dict[str, str]:
 
 # ─── Account Fetching ─────────────────────────────────────────────────────────
 
-def get_accounts(access_token: str) -> list[dict]:
+def get_accounts(access_token: str, profile: Optional[PlaidProfile] = None) -> list[dict]:
     """
     Fetch all accounts associated with an access token.
 
@@ -156,7 +183,7 @@ def get_accounts(access_token: str) -> list[dict]:
     try:
         from plaid.model.accounts_get_request import AccountsGetRequest
 
-        client = get_plaid_client()
+        client = get_plaid_client(profile)
         request = AccountsGetRequest(access_token=access_token)
         response = client.accounts_get(request)
 
@@ -181,12 +208,12 @@ def get_accounts(access_token: str) -> list[dict]:
 
 # ─── Transaction Fetching ─────────────────────────────────────────────────────
 
-def refresh_transactions(access_token: str) -> dict:
+def refresh_transactions(access_token: str, profile: Optional[PlaidProfile] = None) -> dict:
     """Ask Plaid to refresh transaction data for an access token."""
     try:
         from plaid.model.transactions_refresh_request import TransactionsRefreshRequest
 
-        client = get_plaid_client()
+        client = get_plaid_client(profile)
         request = TransactionsRefreshRequest(access_token=access_token)
         response = client.transactions_refresh(request)
         logger.info("Triggered Plaid transaction refresh for access token.")
@@ -201,6 +228,7 @@ def get_transactions(
     start_date: date,
     end_date: date,
     account_ids: Optional[list[str]] = None,
+    profile: Optional[PlaidProfile] = None,
 ) -> list[dict]:
     """
     Fetch transactions from Plaid for a given date range.
@@ -229,7 +257,7 @@ def get_transactions(
             TransactionsGetRequestOptions
         )
 
-        client = get_plaid_client()
+        client = get_plaid_client(profile)
         options = TransactionsGetRequestOptions()
 
         if account_ids:
@@ -283,6 +311,7 @@ def get_transactions(
 def get_incremental_transactions(
     access_token: str,
     since_date: date,
+    profile: Optional[PlaidProfile] = None,
 ) -> list[dict]:
     """
     Fetch only new or updated transactions since a given date.
@@ -314,6 +343,7 @@ def get_incremental_transactions(
             access_token=access_token,
             start_date=since_date,
             end_date=today,
+            profile=profile,
         )
     except Exception as e:
         logger.exception(f"Failed to fetch incremental transactions: {e}")
@@ -393,7 +423,10 @@ def _normalize_plaid_transaction(plaid_txn, institution: str = '') -> dict:
 
 # ─── Link Token (for future Plaid Link UI) ────────────────────────────────────
 
-def create_link_token(user_id: str = 'finance_sync_user') -> str:
+def create_link_token(
+    user_id: str = 'finance_sync_user',
+    profile: Optional[PlaidProfile] = None,
+) -> str:
     """
     Create a Plaid Link token for the Link UI flow.
 
@@ -423,7 +456,7 @@ def create_link_token(user_id: str = 'finance_sync_user') -> str:
         from plaid.model.products import Products
         from plaid.model.country_code import CountryCode
         
-        client = get_plaid_client()
+        client = get_plaid_client(profile)
 
         # Build the core request with maximum data collection (reporting only, no money movement)
         request = LinkTokenCreateRequest(
@@ -455,7 +488,10 @@ def create_link_token(user_id: str = 'finance_sync_user') -> str:
 
 # ─── Public Token Exchange (for Plaid Link UI) ─────────────────────────────────
 
-def item_public_token_exchange(public_token: str) -> str:
+def item_public_token_exchange(
+    public_token: str,
+    profile: Optional[PlaidProfile] = None,
+) -> str:
     """
     Exchange a public token (returned by Plaid Link UI) for an access token.
 
@@ -478,7 +514,7 @@ def item_public_token_exchange(public_token: str) -> str:
             ItemPublicTokenExchangeRequest
         )
 
-        client = get_plaid_client()
+        client = get_plaid_client(profile)
         request = ItemPublicTokenExchangeRequest(public_token=public_token)
         response = client.item_public_token_exchange(request)
         access_token = response['access_token']

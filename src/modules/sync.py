@@ -133,99 +133,114 @@ def _fetch_from_plaid() -> list[dict]:
     """
     logger.info("Fetching live transactions from Plaid...")
 
-    access_tokens = plaid_integration.get_access_tokens()
-    if not access_tokens:
-        logger.warning("No Plaid access tokens configured. Returning empty transaction list.")
+    plaid_profiles = plaid_integration.get_plaid_profiles()
+    if not plaid_profiles:
+        logger.warning("No Plaid profiles configured. Returning empty transaction list.")
         return []
 
     all_transactions = []
     end_date = date.today()
 
-    for institution_name, access_token in access_tokens.items():
-        try:
-            logger.info(f"Processing institution: {institution_name}")
+    for profile in plaid_profiles:
+        access_tokens = plaid_integration.get_access_tokens(profile)
+        if not access_tokens:
+            logger.warning(
+                f"No Plaid access tokens configured for profile '{profile.name}'. "
+                f"Expected environment variables matching '{profile.token_prefix}*'."
+            )
+            continue
 
-            # ─── Determine start date for incremental sync ─────────────────────
+        logger.info(
+            f"Processing Plaid profile: {profile.name} "
+            f"({profile.env}, {len(access_tokens)} token(s))"
+        )
 
-            latest_db_date = get_latest_transaction_date()
-            if SYNC_MODE == 'incremental':
-                if latest_db_date:
-                    # Database has transactions — start from latest minus buffer days
-                    latest_date_obj = datetime.fromisoformat(latest_db_date).date()
-                    start_date = latest_date_obj - timedelta(days=INCREMENTAL_SYNC_BUFFER_DAYS)
-                    logger.info(
-                        f"  Incremental sync from {start_date} "
-                        f"(DB latest: {latest_db_date}, buffer: {INCREMENTAL_SYNC_BUFFER_DAYS} days)"
-                    )
+        for institution_name, access_token in access_tokens.items():
+            try:
+                logger.info(f"Processing institution: {profile.name}/{institution_name}")
+
+                # ─── Determine start date for incremental sync ─────────────────────
+
+                latest_db_date = get_latest_transaction_date()
+                if SYNC_MODE == 'incremental':
+                    if latest_db_date:
+                        # Database has transactions — start from latest minus buffer days
+                        latest_date_obj = datetime.fromisoformat(latest_db_date).date()
+                        start_date = latest_date_obj - timedelta(days=INCREMENTAL_SYNC_BUFFER_DAYS)
+                        logger.info(
+                            f"  Incremental sync from {start_date} "
+                            f"(DB latest: {latest_db_date}, buffer: {INCREMENTAL_SYNC_BUFFER_DAYS} days)"
+                        )
+                    else:
+                        # First run — fetch a configurable initial history window
+                        start_date = end_date - timedelta(days=FULL_SYNC_LOOKBACK_DAYS)
+                        logger.info(
+                            f"  First run — fetching from {start_date} "
+                            f"({FULL_SYNC_LOOKBACK_DAYS} days back)"
+                        )
                 else:
-                    # First run — fetch a configurable initial history window
+                    # Full sync mode — fetch from a configurable lookback window
                     start_date = end_date - timedelta(days=FULL_SYNC_LOOKBACK_DAYS)
-                    logger.info(
-                        f"  First run — fetching from {start_date} "
-                        f"({FULL_SYNC_LOOKBACK_DAYS} days back)"
-                    )
-            else:
-                # Full sync mode — fetch from a configurable lookback window
-                start_date = end_date - timedelta(days=FULL_SYNC_LOOKBACK_DAYS)
 
-            # ─── Refresh Plaid data before fetching history ───────────────────
-            if PLAID_FORCE_REFRESH:
-                plaid_integration.refresh_transactions(access_token)
+                # ─── Refresh Plaid data before fetching history ───────────────────
+                if PLAID_FORCE_REFRESH:
+                    plaid_integration.refresh_transactions(access_token, profile)
 
-            # ─── Fetch transactions and accounts ────────────────────────────────
+                # ─── Fetch transactions and accounts ────────────────────────────────
 
-            # Get accounts for this institution to build account_id → name lookup
-            accounts = plaid_integration.get_accounts(access_token)
-            account_lookup = {
-                acct['account_id']: f"{acct['name']} ••{acct['mask']}"
-                for acct in accounts
-            }
+                # Get accounts for this institution to build account_id → name lookup
+                accounts = plaid_integration.get_accounts(access_token, profile)
+                account_lookup = {
+                    acct['account_id']: f"{acct['name']} ••{acct['mask']}"
+                    for acct in accounts
+                }
 
-            logger.debug(f"  Resolved {len(account_lookup)} account(s).")
+                logger.debug(f"  Resolved {len(account_lookup)} account(s).")
 
-            # Fetch transactions for the determined date range
-            plaid_transactions = plaid_integration.get_transactions(
-                access_token=access_token,
-                start_date=start_date,
-                end_date=end_date,
-            )
+                # Fetch transactions for the determined date range
+                plaid_transactions = plaid_integration.get_transactions(
+                    access_token=access_token,
+                    start_date=start_date,
+                    end_date=end_date,
+                    profile=profile,
+                )
 
-            # ─── Normalize and tag with institution ────────────────────────────
+                # ─── Normalize and tag with institution ────────────────────────────
 
-            for txn in plaid_transactions:
-                # Replace account_id with human-readable name
-                account_id = txn.get('account')
-                if account_id in account_lookup:
-                    txn['account'] = account_lookup[account_id]
-                else:
-                    # Fallback if lookup fails (shouldn't happen, but be safe)
-                    txn['account'] = account_id
+                for txn in plaid_transactions:
+                    # Replace account_id with human-readable name
+                    account_id = txn.get('account')
+                    if account_id in account_lookup:
+                        txn['account'] = account_lookup[account_id]
+                    else:
+                        # Fallback if lookup fails (shouldn't happen, but be safe)
+                        txn['account'] = account_id
 
-                # Tag with institution name
-                txn['institution'] = institution_name
+                    # Tag with institution name
+                    txn['institution'] = institution_name
 
-            dates = [txn.get('date') for txn in plaid_transactions if txn.get('date')]
-            oldest_date = min(dates) if dates else None
-            newest_date = max(dates) if dates else None
+                dates = [txn.get('date') for txn in plaid_transactions if txn.get('date')]
+                oldest_date = min(dates) if dates else None
+                newest_date = max(dates) if dates else None
 
-            logger.info(
-                f"  {institution_name}: fetched {len(plaid_transactions)} transaction(s)"
-                f" from {oldest_date or 'n/a'} to {newest_date or 'n/a'}"
-            )
+                logger.info(
+                    f"  {profile.name}/{institution_name}: fetched {len(plaid_transactions)} transaction(s)"
+                    f" from {oldest_date or 'n/a'} to {newest_date or 'n/a'}"
+                )
 
-            all_transactions.extend(plaid_transactions)
+                all_transactions.extend(plaid_transactions)
 
-        except Exception as e:
-            logger.exception(
-                f"Error processing {institution_name} — skipping this institution. "
-                f"Error: {e}"
-            )
-            # Don't re-raise — continue processing other institutions
-            # The pipeline is resilient to partial failures
+            except Exception as e:
+                logger.exception(
+                    f"Error processing {institution_name} — skipping this institution. "
+                    f"Error: {e}"
+                )
+                # Don't re-raise — continue processing other institutions
+                # The pipeline is resilient to partial failures
 
     logger.info(
         f"Plaid fetch complete: {len(all_transactions)} total transaction(s) "
-        f"from {len(access_tokens)} institution(s)"
+        f"from {len(plaid_profiles)} profile(s)"
     )
 
     return all_transactions

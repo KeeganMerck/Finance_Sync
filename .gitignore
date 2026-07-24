@@ -9,15 +9,15 @@ access_tokens.json
 # ─── Database ─────────────────────────────────────────────────────────────────
 # Comment out data/*.db if you want to track the database in version control.
 # Keeping it excluded is safer — it may contain real financial data.
-data/*.db
-data/*.db-shm
-data/*.db-wal
+src/core/data/*.db
+src/core/data/*.db-shm
+src/core/data/*.db-wal
 
 # ─── Exported CSVs (contain real transaction data) ───────────────────────────
-data/*.csv
+src/core/data/*.csv
 
 # ─── Logs ────────────────────────────────────────────────────────────────────
-logs/
+src/core/logs/
 *.log
 
 # ─── Python ──────────────────────────────────────────────────────────────────
@@ -49,17 +49,11 @@ $RECYCLE.BIN/
 .AppleDouble
 .LSOverride
 
-# ─── Distribution / packaging (future) ───────────────────────────────────────
-dist/
-build/
-*.egg-info/
-.eggs/
-
 # ─── Test artifacts ───────────────────────────────────────────────────────────
 .pytest_cache/
 htmlcov/
 .coverage
 coverage.xml
 
-# ─── Credentials for third-party services (future) ───────────────────────────────
+# ─── Credentials for third-party services ───────────────────────────────
 google_credentials.json

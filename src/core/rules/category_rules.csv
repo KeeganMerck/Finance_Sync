@@ -65,6 +65,7 @@ contains,merchant,AUTOPAY PAYMENT,,,true
 contains,merchant,AUTOMATIC PAYMENT,,,true
 contains,merchant,AMEX EPAYMENT,,,true
 contains,merchant,CHASE CREDIT CRD,,,true
+contains,merchant,Payment Thank You-Mobile,,,true
 contains,account AND merchant,6 MONTH CERTIFICATE|Renewed,,,true
 #
 # ── GROUP 2: PAYCHECK ────────────────────────────────────────────────────────
@@ -74,13 +75,31 @@ contains,account AND merchant,6 MONTH CERTIFICATE|Renewed,,,true
 # provider changes.
 #
 contains,merchant,Deposit ACH WELLS FARGO BANK,Paycheck,,
+contains,merchant,Share 0000 REF HEALTH INSURANCE,Paycheck,,
+
+#
+# Ameriprise account fee credits
+contains,merchant,AEIS,Subscriptions,,
+contains,merchant AND amount,AEIS|10000,,,true
+#
+# ── GROUP 15: SHOPPING — SPECIFIC OVERRIDES ──────────────────────────────────
+# These merchants have inconsistent or incorrect Plaid categories (OTHER,
+# TRANSFER_IN, GENERAL_SERVICES) that would otherwise misclassify them.
+#
+contains,merchant,Rhoback,Shopping,,
+contains,merchant,Tuckernuck,Shopping,,
+contains,merchant,JOHNNY T-SHIRT,Shopping,,
+exact,merchant,ON,Shopping,,
+exact,merchant,Hilliard Studio Method,Shopping,,
+exact,merchant,Boem,Shopping,,
+exact,merchant,Vuori,Shopping,,
+exact,merchant,Montana Private Company,Shopping,,
+exact,merchant,Treaty Oak Revival,Shopping,,
+exact,plaid_category_primary,HOME_IMPROVEMENT,Shopping,,
 #
 # ── GROUP 3: OTHER INCOME ────────────────────────────────────────────────────
 # Covers interest earned, dividends, tax refunds, money received via
 # payment apps (Venmo, CashApp, Zelle inbound, etc.), and account fees/credits.
-#
-# Ameriprise account fee credits
-contains,merchant,AEIS,Other Income,,
 #
 # Payment app inbound transfers — Venmo received, CashApp received, etc.
 # Outbound app transfers (you paying someone) stay in Transfers (Group 16).
@@ -100,7 +119,7 @@ contains,description,Deposit Dividend,Other Income,,
 # Utilities and non-Bilt rent here.
 #
 contains,merchant,DUKE ENERGY,Rent & Utilities,Duke Energy,
-contains,merchant,Amica Mutual Insurance,Rent & Utilities,Amica Mutual Insurance,
+contains,merchant,Amica Mutual Insurance,Rent & Utilities,Amica Insurance,
 exact,plaid_category,RENT_AND_UTILITIES_RENT,Rent & Utilities,,
 exact,plaid_category,RENT_AND_UTILITIES_GAS_AND_ELECTRICITY,Rent & Utilities,,
 exact,plaid_category,RENT_AND_UTILITIES_WATER_AND_SEWAGE,Rent & Utilities,,
@@ -123,6 +142,7 @@ contains,merchant,Speedway,Gas,,
 contains,merchant,Murphy USA,Gas,,
 contains,merchant,Marathon,Gas,,
 contains,merchant,Pilot Flying J,Gas,,
+contains,merchant,7-Eleven,Gas,,
 #
 # Plaid gas category catch-all
 exact,plaid_category,TRANSPORTATION_GAS,Gas,,
@@ -136,29 +156,31 @@ contains,merchant,Netflix,Subscriptions,Netflix,
 contains,merchant,Hulu,Subscriptions,Hulu,
 contains,merchant,YouTube,Subscriptions,YouTube Premium,
 contains,merchant,Amazon Prime,Subscriptions,Amazon Prime,
-#
-# ── GROUP 7: HOME ────────────────────────────────────────────────────────────
-# AEIS appears as a recurring home-related charge (HOA or home services).
-#
-contains,merchant,AEIS,Home,,
-exact,plaid_category_primary,HOME_IMPROVEMENT,Home,,
+contains,merchant,WF CIC FITNESS CENTER,Subscriptions,WF CIC FITNESS CENTER,
+contains,plaid_category_primary,BANK_FEES,Subscriptions,,
 #
 # ── GROUP 8: HEALTH ──────────────────────────────────────────────────────────
 # Covers doctors, dentists, pharmacies, supplements, labs.
 #
 exact,plaid_category_primary,MEDICAL,Health & Fitness,,
 exact,merchant,Drink Lmnt,Health & Fitness,,
+exact,merchant,Mood House,Health & Fitness,,
 #
 # ── GROUP 9: TRANSPORTATION ──────────────────────────────────────────────────
 # Ride shares, transit, parking, and other transportation (NOT gas — handled above).
 # Mavis Discount Tire is auto maintenance — Plaid puts it in GENERAL_SERVICES
 # which would otherwise catch-all to Shopping. Specific rule must come first.
 #
-contains,merchant,Mavis Discount Tire,Transportation,,
-exact,merchant,Telos Corporation,Transportation,,
+contains,merchant,Mavis,Automotive,,
+contains,merchant,Mazda,Automotive,,
+contains,merchant,Hyundai,Automotive,,
+contains,merchant,Car Wash,Automotive,,
+contains,merchant,Napa Auto,Automotive,,
+contains,merchant,Auto ,Automotive,,
+exact,merchant,Telos Corporation,Automotive,,
 #
 # Plaid transportation category catch-all (excludes GAS which is handled above)
-exact,plaid_category_primary,TRANSPORTATION,Transportation,,
+exact,plaid_category_primary,TRANSPORTATION,Travel,,
 #
 # ── GROUP 10: RESTAURANT & BAR OVERRIDES ─────────────────────────────────────
 # These merchants are misclassified by Plaid (as OTHER, GENERAL_SERVICES, or
@@ -177,6 +199,11 @@ contains,merchant,Skp Apelace,Restaurants & Bars,,
 contains,merchant,Paco's Tacos & Tequila,Restaurants & Bars,,
 contains,merchant,Golden Cow Creamery,Restaurants & Bars,,
 contains,merchant,Pins Mechanical,Restaurants & Bars,,
+contains,merchant,Elan Vital Holdings,Restaurants & Bars,,
+contains,merchant,Tyber Creek Pub,Restaurants & Bars,,
+exact,merchant,Drift,Restaurants & Bars,,
+contains,merchant,Restaurant,Restaurants & Bars,,
+contains,merchant,Tavern,Restaurants & Bars,,
 #
 # ── GROUP 11: GROCERIES ──────────────────────────────────────────────────────
 # Specific grocery store rules catch known chains first (in case Plaid ever
@@ -212,21 +239,18 @@ exact,plaid_category_primary,FOOD_AND_DRINK,Restaurants & Bars,,
 contains,merchant,Skyla,Entertainment,,
 contains,merchant,GolfNow,Entertainment,,
 contains,merchant,Vivid Seats,Entertainment,,
+contains,merchant,Knights Play Llc Grill,Entertainment,,
+contains,merchant,Coastal Credit union,Entertainment,,
+contains,merchant,Golf,Entertainment,,
+contains,merchant,Knights Play Llc Grill,Entertainment,,
+contains,merchant,Leatherman,Entertainment,,
+contains,merchant,Lions Paw And Panthers Ru,Entertainment,,
 exact,plaid_category_primary,ENTERTAINMENT,Entertainment,,
 #
 # ── GROUP 14: TRAVEL ─────────────────────────────────────────────────────────
 # Hotels, flights, and travel services.
 #
 exact,plaid_category_primary,TRAVEL,Travel,,
-#
-# ── GROUP 15: SHOPPING — SPECIFIC OVERRIDES ──────────────────────────────────
-# These merchants have inconsistent or incorrect Plaid categories (OTHER,
-# TRANSFER_IN, GENERAL_SERVICES) that would otherwise misclassify them.
-#
-contains,merchant,Rhoback,Shopping,,
-contains,merchant,Tuckernuck,Shopping,,
-exact,merchant,Hilliard Studio Method,Shopping,,
-exact,merchant,Boem,Shopping,,
 #
 # ── GROUP 16: SHOPPING — CATEGORY CATCH-ALLS ─────────────────────────────────
 # PERSONAL_CARE (beauty, grooming, gyms) maps to Shopping per user preference.

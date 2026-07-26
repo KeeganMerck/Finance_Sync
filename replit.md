@@ -72,9 +72,15 @@ src/
 | `USE_PLAID` | `True` = live Plaid API; `False` = mock JSON |
 | `DRY_RUN` | Logs everything, writes nothing to disk/DB/Sheets |
 | `ENABLE_DATABASE` | Toggle SQLite persistence |
-| `SYNC_MODE` | `"full"` = full lookback window; `"incremental"` = since latest DB entry |
+| `ROLLING_SYNC_DAYS` | Days to look back for institutions already in the DB (default: 14) |
+| `INITIAL_SYNC_LOOKBACK_DAYS` | Days to fetch for a brand-new institution with no DB records (default: 730) |
 | `GOOGLE_SHEETS_ENABLED` | Toggle Sheets export |
 | `PLAID_FORCE_REFRESH` | Call `/transactions/refresh` before fetching |
+
+**Sync window logic (per institution):**
+- New institution (no DB records for it yet) → fetches `INITIAL_SYNC_LOOKBACK_DAYS` (730) of history automatically. No separate "initial sync" step needed.
+- Existing institution → fetches last `ROLLING_SYNC_DAYS` (14) to catch pending→posted transitions.
+- Old transaction updates (>14 days ago) won't be caught on routine syncs. This is an accepted tradeoff — old settled transactions rarely change.
 
 ---
 

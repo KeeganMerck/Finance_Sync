@@ -15,15 +15,14 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from ..core.config import (
-    FULL_SYNC_LOOKBACK_DAYS,
-    INCREMENTAL_SYNC_BUFFER_DAYS,
+    INITIAL_SYNC_LOOKBACK_DAYS,
+    ROLLING_SYNC_DAYS,
     MOCK_JSON_PATH,
     PLAID_FORCE_REFRESH,
-    SYNC_MODE,
     USE_PLAID,
 )
 from ..api import plaid_integration
-from .database import get_latest_transaction_date
+from .database import get_latest_transaction_date_for_institution
 
 logger = logging.getLogger(__name__)
 
@@ -117,9 +116,13 @@ def _fetch_from_plaid() -> list[dict]:
     Fetch live transactions from Plaid API for all configured institutions.
 
     For each institution (identified by PLAID_{ENV}_TOKEN_* environment variables):
-        1. Determines the starting date for incremental sync:
-           - If DB has transactions: start_date = (most recent date) - 14 days
-           - If DB is empty (first run): start_date = today - 365 days
+        1. Determines the starting date using per-institution DB tracking:
+           - New institution (no DB records for it): start_date = today - INITIAL_SYNC_LOOKBACK_DAYS
+             This gives a full history fetch (up to 730 days) automatically —
+             no manual "initial sync" step needed when adding a new account.
+           - Existing institution: start_date = (latest date for that institution) - ROLLING_SYNC_DAYS
+             This is a short rolling window (default 14 days) that catches
+             pending→posted transitions and recent corrections efficiently.
         2. Fetches transactions from Plaid for [start_date, today]
         3. Resolves account IDs to human-readable account names
         4. Tags each transaction with the institution name
@@ -159,28 +162,33 @@ def _fetch_from_plaid() -> list[dict]:
             try:
                 logger.info(f"Processing institution: {profile.name}/{institution_name}")
 
-                # ─── Determine start date for incremental sync ─────────────────────
+                # ─── Determine start date (per institution) ────────────────────
+                #
+                # We look up the latest date FOR THIS INSTITUTION SPECIFICALLY,
+                # not the global DB max. This ensures:
+                #   - A brand-new institution (no DB records) always gets a full
+                #     initial history fetch (INITIAL_SYNC_LOOKBACK_DAYS, up to 730).
+                #   - An existing institution uses a short rolling window
+                #     (ROLLING_SYNC_DAYS) to catch pending→posted changes and
+                #     any recent corrections without re-downloading full history.
+                #
+                latest_db_date = get_latest_transaction_date_for_institution(institution_name)
 
-                latest_db_date = get_latest_transaction_date()
-                if SYNC_MODE == 'incremental':
-                    if latest_db_date:
-                        # Database has transactions — start from latest minus buffer days
-                        latest_date_obj = datetime.fromisoformat(latest_db_date).date()
-                        start_date = latest_date_obj - timedelta(days=INCREMENTAL_SYNC_BUFFER_DAYS)
-                        logger.info(
-                            f"  Incremental sync from {start_date} "
-                            f"(DB latest: {latest_db_date}, buffer: {INCREMENTAL_SYNC_BUFFER_DAYS} days)"
-                        )
-                    else:
-                        # First run — fetch a configurable initial history window
-                        start_date = end_date - timedelta(days=FULL_SYNC_LOOKBACK_DAYS)
-                        logger.info(
-                            f"  First run — fetching from {start_date} "
-                            f"({FULL_SYNC_LOOKBACK_DAYS} days back)"
-                        )
+                if latest_db_date:
+                    # Institution has existing records — use rolling window.
+                    latest_date_obj = datetime.fromisoformat(latest_db_date).date()
+                    start_date = latest_date_obj - timedelta(days=ROLLING_SYNC_DAYS)
+                    logger.info(
+                        f"  Existing institution — rolling sync from {start_date} "
+                        f"(DB latest: {latest_db_date}, window: {ROLLING_SYNC_DAYS} days)"
+                    )
                 else:
-                    # Full sync mode — fetch from a configurable lookback window
-                    start_date = end_date - timedelta(days=FULL_SYNC_LOOKBACK_DAYS)
+                    # New institution — fetch full available history.
+                    start_date = end_date - timedelta(days=INITIAL_SYNC_LOOKBACK_DAYS)
+                    logger.info(
+                        f"  New institution — initial fetch from {start_date} "
+                        f"({INITIAL_SYNC_LOOKBACK_DAYS} days back)"
+                    )
 
                 # ─── Refresh Plaid data before fetching history ───────────────────
                 if PLAID_FORCE_REFRESH:

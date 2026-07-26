@@ -230,9 +230,22 @@ def init_account_snapshots(db_path: Path = DATABASE_PATH) -> None:
 
 # ─── Write Operations ──────────────────────────────────────────────────────────
 
-# Reusable SQL for single and batch upserts — defined once to avoid drift
+# Smart upsert SQL — defined once to avoid drift.
+#
+# INSERT behaviour (new transaction_id):
+#   All fields are written, including user_category from the categorizer.
+#
+# ON CONFLICT behaviour (existing transaction_id):
+#   Only Plaid-owned fields are updated (date, account, merchant, description,
+#   plaid_category, plaid_category_primary, amount, pending, institution, last_updated).
+#   user_category and excluded are intentionally OMITTED from the SET clause so
+#   manual edits made directly in the database survive every subsequent sync.
+#
+#   The WHERE clause uses IS NOT (NULL-safe) to skip the update entirely when
+#   none of the Plaid fields have changed, keeping last_updated pristine and
+#   making it possible to count truly new/changed rows vs unchanged ones.
 _UPSERT_SQL = """
-    INSERT OR REPLACE INTO transactions (
+    INSERT INTO transactions (
         transaction_id, date, account, merchant, description,
         plaid_category, plaid_category_primary, user_category, amount, pending,
         institution, last_updated, excluded
@@ -241,6 +254,27 @@ _UPSERT_SQL = """
         :plaid_category, :plaid_category_primary, :user_category, :amount, :pending,
         :institution, :last_updated, :excluded
     )
+    ON CONFLICT(transaction_id) DO UPDATE SET
+        date                   = excluded.date,
+        account                = excluded.account,
+        merchant               = excluded.merchant,
+        description            = excluded.description,
+        plaid_category         = excluded.plaid_category,
+        plaid_category_primary = excluded.plaid_category_primary,
+        amount                 = excluded.amount,
+        pending                = excluded.pending,
+        institution            = excluded.institution,
+        last_updated           = excluded.last_updated
+    WHERE
+        transactions.date                   IS NOT excluded.date                   OR
+        transactions.account                IS NOT excluded.account                OR
+        transactions.merchant               IS NOT excluded.merchant               OR
+        transactions.description            IS NOT excluded.description            OR
+        transactions.plaid_category         IS NOT excluded.plaid_category         OR
+        transactions.plaid_category_primary IS NOT excluded.plaid_category_primary OR
+        transactions.amount                 IS NOT excluded.amount                 OR
+        transactions.pending                IS NOT excluded.pending                OR
+        transactions.institution            IS NOT excluded.institution
 """
 
 # Upsert SQL for account snapshots
@@ -261,9 +295,11 @@ def upsert_transaction(transaction: dict, db_path: Path = DATABASE_PATH) -> None
     """
     Insert or update a single canonical transaction.
 
-    Uses INSERT OR REPLACE keyed on transaction_id. If the transaction already
-    exists (e.g. a previous sync run), it is fully overwritten with the latest
-    data. user_category is included in the write so categorizer output persists.
+    Uses a smart upsert keyed on transaction_id:
+      - New rows: all fields written, including user_category from the categorizer.
+      - Existing rows: only Plaid-owned fields updated; user_category and excluded
+        are preserved so manual DB edits survive subsequent syncs.
+      - Unchanged rows: skipped entirely (last_updated stays pristine).
 
     Args:
         transaction: Canonical transaction dict. Must contain 'transaction_id'.
@@ -287,9 +323,15 @@ def upsert_transaction(transaction: dict, db_path: Path = DATABASE_PATH) -> None
 def upsert_transactions(
     transactions: list[dict],
     db_path: Path = DATABASE_PATH,
-) -> int:
+) -> dict:
     """
     Batch upsert a list of canonical transactions in a single database transaction.
+
+    Uses a smart upsert keyed on transaction_id:
+      - New rows: all fields written, including user_category from the categorizer.
+      - Existing rows with changes: Plaid-owned fields updated; user_category and
+        excluded preserved so manual DB edits survive subsequent syncs.
+      - Existing rows with no changes: skipped entirely (last_updated stays pristine).
 
     Using executemany() inside one transaction is significantly faster than
     individual calls for large batches, and atomicity means either all rows
@@ -300,8 +342,11 @@ def upsert_transactions(
         db_path:      Path to the database.
 
     Returns:
-        Count of transactions submitted for upsert.
-        Returns 0 if database is disabled.
+        Dict with keys:
+          - "written":   count of rows inserted or updated (Plaid data changed)
+          - "unchanged": count of rows skipped because nothing changed
+          - "total":     total rows processed
+        Returns {"written": 0, "unchanged": 0, "total": 0} if database is disabled.
 
     Raises:
         sqlite3.Error: If the batch write fails (all rows are rolled back).
@@ -311,17 +356,24 @@ def upsert_transactions(
             f"Database disabled — skipping batch upsert "
             f"of {len(transactions)} transaction(s)."
         )
-        return 0
+        return {"written": 0, "unchanged": 0, "total": 0}
 
     if not transactions:
         logger.warning("upsert_transactions called with empty list — nothing to write.")
-        return 0
+        return {"written": 0, "unchanged": 0, "total": 0}
 
     with _get_connection(db_path) as conn:
+        before = conn.total_changes
         conn.executemany(_UPSERT_SQL, transactions)
+        written = conn.total_changes - before
 
-    logger.info(f"Batch upserted {len(transactions)} transaction(s) to database.")
-    return len(transactions)
+    total = len(transactions)
+    unchanged = total - written
+    logger.info(
+        f"Batch upsert complete: {written} written (new or changed), "
+        f"{unchanged} unchanged, {total} total."
+    )
+    return {"written": written, "unchanged": unchanged, "total": total}
 
 
 # ─── Read Operations ───────────────────────────────────────────────────────────

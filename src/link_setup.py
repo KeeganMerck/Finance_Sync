@@ -66,7 +66,44 @@ def _get_requested_profile():
         if profile.name.upper() == requested_name or profile.prefix.upper() == requested_name:
             return profile
 
-    raise ValueError(f"Unknown Plaid profile: {requested_name}")
+    raise ValueError(f"Unknown Plaid profile: {requested_name!r}. "
+                     f"Available: {[p.name for p in profiles]}")
+
+
+def _find_profile_for_institution(institution_name: str):
+    """
+    Scan all configured Plaid profiles to find which one owns the given institution.
+
+    Searches every profile's token prefix in the environment so the caller
+    never needs to know which client ID / secret to use — it's derived
+    automatically from where the access token lives.
+
+    Args:
+        institution_name: Raw institution string from the UI (e.g. 'fidelity', 'CHASE').
+
+    Returns:
+        Tuple of (PlaidProfile, env_key, access_token) for the matching profile,
+        or (None, None, None) if no profile has a token for this institution.
+    """
+    profiles = plaid_integration.get_plaid_profiles()
+    institution_upper = institution_name.strip().upper()
+
+    for profile in profiles:
+        env_key = f"{profile.token_prefix}{institution_upper}"
+        token = os.environ.get(env_key)
+        if token:
+            logger.info(
+                f"Auto-detected profile '{profile.name}' for institution "
+                f"'{institution_upper}' via env key '{env_key}'."
+            )
+            return profile, env_key, token
+
+    logger.warning(
+        f"No access token found for institution '{institution_upper}' "
+        f"in any configured profile. Checked prefixes: "
+        f"{[p.token_prefix for p in profiles]}"
+    )
+    return None, None, None
 
 
 # ─── HTML Template for Plaid Link UI ───────────────────────────────────────
@@ -172,10 +209,27 @@ HTML_TEMPLATE = """
             </label>
         </div>
 
+        <!-- Profile selector — shown for new connections only -->
+        <div id="profileSelect" style="margin: 15px 0;">
+            <label for="profile" style="display: block; margin-bottom: 5px; font-weight: 600;">
+                Plaid Profile (which credentials to use):
+            </label>
+            <select id="profile" style="padding: 8px; width: 220px; border: 1px solid #ddd; border-radius: 4px;">
+                <option value="">Loading profiles…</option>
+            </select>
+            <div id="profileHint" style="font-size: 12px; color: #666; margin-top: 4px;"></div>
+        </div>
+
+        <!-- Institution name — shown for single-institution update only -->
         <div id="institutionSelect" style="margin: 15px 0; display: none;">
-            <label for="institution" style="display: block; margin-bottom: 5px;">Institution name (from .env):</label>
-            <input type="text" id="institution" placeholder="e.g., fidelity, robinhood, chase" 
-                   style="padding: 8px; width: 200px; border: 1px solid #ddd; border-radius: 4px;">
+            <label for="institution" style="display: block; margin-bottom: 5px; font-weight: 600;">
+                Institution name (from .env):
+            </label>
+            <input type="text" id="institution" placeholder="e.g., FIDELITY, ROBINHOOD, CHASE"
+                   style="padding: 8px; width: 220px; border: 1px solid #ddd; border-radius: 4px; text-transform: uppercase;">
+            <div style="font-size: 12px; color: #666; margin-top: 4px;">
+                Profile is auto-detected from your environment variables.
+            </div>
         </div>
 
         <button id="openLink" class="button">Open Plaid Link</button>
@@ -185,30 +239,73 @@ HTML_TEMPLATE = """
 
     <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
     <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            // Handle mode selection to show/hide institution input
-            document.querySelectorAll('input[name="mode"]').forEach(radio => {
-                radio.addEventListener('change', (e) => {
-                    const institutionDiv = document.getElementById('institutionSelect');
-                    institutionDiv.style.display = e.target.value === 'update' ? 'block' : 'none';
-                });
-            });
+        document.addEventListener('DOMContentLoaded', async function() {
 
-            // Helper function that converts a single Plaid instance into a blocking Promise
+            // ── Load profiles into dropdown ─────────────────────────────────────
+            async function loadProfiles() {
+                try {
+                    const res = await fetch('/profiles');
+                    const data = await res.json();
+                    const select = document.getElementById('profile');
+                    select.innerHTML = '';
+                    if (!data.profiles || data.profiles.length === 0) {
+                        select.innerHTML = '<option value="">No profiles configured</option>';
+                        return;
+                    }
+                    data.profiles.forEach((p, i) => {
+                        const opt = document.createElement('option');
+                        opt.value = p.name;
+                        opt.textContent = `${p.name}  (${p.prefix}_*)`;
+                        if (i === 0) opt.selected = true;
+                        select.appendChild(opt);
+                    });
+                    updateProfileHint();
+                } catch (e) {
+                    document.getElementById('profile').innerHTML =
+                        '<option value="">Error loading profiles</option>';
+                }
+            }
+
+            function updateProfileHint() {
+                const select = document.getElementById('profile');
+                const hint = document.getElementById('profileHint');
+                const selected = select.options[select.selectedIndex];
+                if (selected) {
+                    hint.textContent =
+                        `New tokens will be stored as ${selected.textContent.split('(')[1]?.replace(')','').trim() || '…'}INSTITUTIONNAME`;
+                }
+            }
+
+            document.getElementById('profile').addEventListener('change', updateProfileHint);
+            await loadProfiles();
+
+            // ── Show/hide fields based on mode ──────────────────────────────────
+            function updateFieldVisibility(mode) {
+                document.getElementById('profileSelect').style.display =
+                    mode === 'new' ? 'block' : 'none';
+                document.getElementById('institutionSelect').style.display =
+                    mode === 'update' ? 'block' : 'none';
+            }
+
+            document.querySelectorAll('input[name="mode"]').forEach(radio => {
+                radio.addEventListener('change', (e) => updateFieldVisibility(e.target.value));
+            });
+            updateFieldVisibility('new');   // Initial state
+
+            // ── Helper: wrap a Plaid handler in a Promise ───────────────────────
             function openPlaidPromise(token) {
                 return new Promise((resolve) => {
                     const handler = Plaid.create({
                         token: token,
                         onSuccess: (public_token, metadata) => {
-                            console.log("Successfully updated item:", metadata);
-                            resolve({ status: 'success', metadata });
+                            console.log('Plaid Link success:', metadata);
+                            resolve({ status: 'success', metadata, public_token });
                         },
                         onExit: (err, metadata) => {
                             if (err) {
-                                console.error("Plaid Link error during update execution:", err);
+                                console.error('Plaid Link error:', err);
                                 resolve({ status: 'error', error: err });
                             } else {
-                                console.log("User closed update modal manually.");
                                 resolve({ status: 'exited' });
                             }
                         }
@@ -217,123 +314,136 @@ HTML_TEMPLATE = """
                 });
             }
 
+            // ── Main button handler ─────────────────────────────────────────────
             document.getElementById('openLink').addEventListener('click', async () => {
                 try {
                     const mode = document.querySelector('input[name="mode"]:checked').value;
-                    
+
+                    // ── Update All ──────────────────────────────────────────────
                     if (mode === 'update_all') {
-                        showStatus('loading', 'Generating update tokens for all institutions...');
-                        
-                        const response = await fetch('/update_all_link_tokens', {
+                        showStatus('loading', 'Generating update tokens for all institutions across all profiles…');
+
+                        const res = await fetch('/update_all_link_tokens', {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' }
+                            headers: { 'Content-Type': 'application/json' },
                         });
-                        const data = await response.json();
-                        
+                        const data = await res.json();
+
                         if (!data.success) {
                             showStatus('error', data.message || 'Failed to generate update tokens');
                             return;
                         }
 
-                        showStatus('loading', 'Tokens generated. Starting interactive updates sequence...');
+                        showStatus('loading', `Generated ${data.successful}/${data.total} tokens. Starting updates…`);
 
-                        let summaryReport = "";
-                        
-                        // Loop sequentially through each token returned by your backend dict
-                        for (const [institution, token] of Object.entries(data.update_tokens)) {
-                            if (token.startsWith('ERROR')) {
-                                summaryReport += `❌ ${institution.toUpperCase()}: Failed token generation\n`;
+                        let report = '';
+                        for (const [label, token] of Object.entries(data.update_tokens)) {
+                            if (String(token).startsWith('ERROR')) {
+                                report += `❌ ${label}: token generation failed\n`;
                                 continue;
                             }
-
-                            showStatus('loading', `Opening prompt window for: ${institution.toUpperCase()}...`);
-                            
-                            // Execution blocks here completely until the specific overlay window is closed
+                            showStatus('loading', `Opening Plaid for: ${label}…`);
                             const result = await openPlaidPromise(token);
-                            
                             if (result.status === 'success') {
-                                summaryReport += `✅ ${institution.toUpperCase()}: Successfully Updated\n`;
+                                report += `✅ ${label}: updated\n`;
+                            } else if (result.status === 'exited') {
+                                report += `⚠️ ${label}: skipped / closed\n`;
                             } else {
-                                summaryReport += `⚠️ ${institution.toUpperCase()}: Skipped/Closed without validation\n`;
+                                report += `❌ ${label}: Plaid error\n`;
                             }
                         }
 
-                        showStatus('success', `Sequence complete! Status report:\n\n${summaryReport}`);
+                        showStatus('success', `All done!\n\n${report}`);
                         return;
                     }
-                    
-                    showStatus('loading', 'Fetching link token...');
-                    let response, data;
-                    
+
+                    // ── Update Single ───────────────────────────────────────────
                     if (mode === 'update') {
                         const institution = document.getElementById('institution').value.trim();
                         if (!institution) {
-                            showStatus('error', 'Please enter an institution name for update mode');
+                            showStatus('error', 'Enter the institution name (e.g. FIDELITY)');
                             return;
                         }
-                        
-                        response = await fetch('/update_link_token', {
+
+                        showStatus('loading', `Looking up ${institution.toUpperCase()} across all profiles…`);
+                        const res = await fetch('/update_link_token', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ institution })
+                            body: JSON.stringify({ institution }),
                         });
-                        data = await response.json();
-                    } else {
-                        response = await fetch('/link_token');
-                        data = await response.json();
+                        const data = await res.json();
+
+                        if (!data.success || !data.link_token) {
+                            showStatus('error', data.message || 'Failed to get update token');
+                            return;
+                        }
+
+                        showStatus('loading',
+                            `Opening Plaid for ${institution.toUpperCase()} (profile: ${data.profile})…`);
+                        const result = await openPlaidPromise(data.link_token);
+
+                        if (result.status === 'success') {
+                            showStatus('success',
+                                `✅ ${institution.toUpperCase()} updated successfully! ` +
+                                `Your existing access token has been extended.`);
+                        } else if (result.status === 'exited') {
+                            showStatus('', '');
+                        } else {
+                            showStatus('error', 'Plaid Link encountered an error. Please try again.');
+                        }
+                        return;
                     }
+
+                    // ── New Connection ──────────────────────────────────────────
+                    const selectedProfile = document.getElementById('profile').value;
+                    if (!selectedProfile) {
+                        showStatus('error', 'No profile selected — check your environment configuration.');
+                        return;
+                    }
+
+                    showStatus('loading', `Fetching link token for profile "${selectedProfile}"…`);
+                    const res = await fetch(`/link_token?profile=${encodeURIComponent(selectedProfile)}`);
+                    const data = await res.json();
 
                     if (!data.link_token) {
-                        throw new Error('No link token received from server');
+                        showStatus('error', data.error || 'No link token received from server');
+                        return;
                     }
 
-                    const isUpdateMode = data.is_update === true;
+                    const result = await openPlaidPromise(data.link_token);
 
-                    const handler = Plaid.create({
-                        token: data.link_token,
-                        onSuccess: async (public_token, metadata) => {
-                            if (isUpdateMode) {
-                                showStatus('success', 'Token updated successfully! Your existing access_token has been extended.');
-                                return;
-                            }
-
-                            showStatus('loading', 'Exchanging public token with server...');
-                            const exchangeResponse = await fetch('/exchange', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ public_token: public_token })
-                            });
-
-                            const exchangeData = await exchangeResponse.json();
-                            if (exchangeData.success) {
-                                showStatus('success', exchangeData.message);
-                            } else {
-                                showStatus('error', exchangeData.message || 'Exchange failed');
-                            }
-                        },
-                        onExit: (err, metadata) => {
-                            if (err) {
-                                showStatus('error', 'Setup cancelled or failed. Please try again.');
-                            } else {
-                                showStatus('', '');
-                            }
+                    if (result.status === 'success') {
+                        showStatus('loading', 'Exchanging public token…');
+                        const exchRes = await fetch('/exchange', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                public_token: result.public_token,
+                                profile: selectedProfile,
+                            }),
+                        });
+                        const exchData = await exchRes.json();
+                        if (exchData.success) {
+                            showStatus('success', exchData.message);
+                        } else {
+                            showStatus('error', exchData.message || 'Token exchange failed');
                         }
-                    });
-                            
-                    handler.open();
-                } catch (error) {
-                    showStatus('error', 'Error: ' + error.message);
+                    } else if (result.status === 'exited') {
+                        showStatus('', '');
+                    } else {
+                        showStatus('error', 'Plaid Link encountered an error. Please try again.');
+                    }
+
+                } catch (err) {
+                    showStatus('error', 'Unexpected error: ' + err.message);
                 }
             });
 
             function showStatus(type, message) {
-                const statusDiv = document.getElementById('status');
-                if (!type) {
-                    statusDiv.style.display = 'none';
-                    return;
-                }
-                statusDiv.className = type;
-                statusDiv.textContent = message;
+                const el = document.getElementById('status');
+                if (!type) { el.style.display = 'none'; return; }
+                el.className = type;
+                el.textContent = message;
             }
         });
     </script>
@@ -411,82 +521,112 @@ def exchange_public_token():
             'message': f'Token exchange failed: {str(e)}'
         }), 500
 
+@app.route('/profiles', methods=['GET'])
+def get_profiles():
+    """Return the list of configured Plaid profile names for the UI dropdown."""
+    try:
+        profiles = plaid_integration.get_plaid_profiles()
+        return jsonify({
+            'profiles': [{'name': p.name, 'prefix': p.prefix} for p in profiles]
+        })
+    except Exception as e:
+        logger.exception("Failed to load profiles")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/update_all_link_tokens', methods=['POST'])
 def generate_all_update_link_tokens():
     """
-    Generates Plaid Link Tokens in UPDATE mode for all existing connections.
-    Processes all PLAID_{ENV}_TOKEN_* environment variables and returns
-    update tokens for each institution using working dictionary parameters.
+    Generate Plaid Link tokens in UPDATE mode for every institution across
+    ALL configured profiles.
+
+    Iterates every profile (PRIMARY, SECONDARY, …) and every access token
+    within each profile so no institution is missed regardless of which
+    client ID / secret it belongs to.
     """
     try:
-        profile = _get_requested_profile()
-        prefix = profile.token_prefix
-        tokens = {}
-        update_tokens = {}
-
-        # Find all existing access tokens
-        for key, value in os.environ.items():
-            if key.startswith(prefix) and value:
-                institution_name = key[len(prefix):]
-                tokens[institution_name] = value
-
-        if not tokens:
-            return jsonify({
-                'success': False,
-                'message': f'No existing access tokens found matching {prefix}*'
-            }), 404
-
-        # Import required Plaid models
         from plaid.model.link_token_create_request import LinkTokenCreateRequest
         from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
         from plaid.model.products import Products
         from plaid.model.country_code import CountryCode
 
-        client = plaid_integration.get_plaid_client(profile)
+        profiles = plaid_integration.get_plaid_profiles()
+        if not profiles:
+            return jsonify({
+                'success': False,
+                'message': 'No Plaid profiles configured.'
+            }), 404
 
-        # Generate update tokens for each institution
-        for institution_name, existing_access_token in tokens.items():
-            try:
-                # Build request using working dict structure for transactions
-                link_request = LinkTokenCreateRequest(
-                    user=LinkTokenCreateRequestUser(client_user_id='finance_sync_user'),
-                    client_name='Finance Sync',
-                    language='en',
-                    country_codes=[CountryCode('US')],
-                    access_token=existing_access_token, 
-                    
-                    # 1. Main baseline configuration
-                    additional_consented_products=[Products('transactions')],
-                    transactions={ "days_requested": 730 }, # Dictionary format retained
-                    
-                    # 2. Cleaned optional products to prevent INVALID_PRODUCT crashes
-                    optional_products=[
-                        Products('investments'),
-                        Products('liabilities'),
-                        Products('identity'),
-                    ]
-                )
+        update_tokens = {}   # institution_name → link_token (or ERROR string)
+        total_found = 0
 
-                response = client.link_token_create(link_request)
-                
-                # Check for standard dict-like or object-based response properties safely
-                token_val = response.get('link_token') if isinstance(response, dict) else response.link_token
-                update_tokens[institution_name] = token_val
-                logger.info(f"Generated update link token for {institution_name}")
+        for profile in profiles:
+            # Collect all access tokens belonging to this profile
+            profile_tokens = {
+                key[len(profile.token_prefix):]: value
+                for key, value in os.environ.items()
+                if key.startswith(profile.token_prefix) and value
+            }
 
-            except Exception as e:
-                logger.error(f"Failed to generate update token for {institution_name}: {e}")
-                update_tokens[institution_name] = f"ERROR: {str(e)}"
+            if not profile_tokens:
+                logger.info(f"Profile '{profile.name}': no tokens found — skipping.")
+                continue
 
-        successful_count = len([t for t in update_tokens.values() if not t.startswith('ERROR')])
-        print(f"\n✓ Generated {successful_count} update link tokens out of {len(tokens)} institutions")
+            total_found += len(profile_tokens)
+            client = plaid_integration.get_plaid_client(profile)
+            logger.info(
+                f"Profile '{profile.name}': generating update tokens for "
+                f"{len(profile_tokens)} institution(s): {list(profile_tokens.keys())}"
+            )
 
-        # Returns the update_tokens payload required by your frontend Promise queue loop
+            for institution_name, existing_access_token in profile_tokens.items():
+                label = f"{profile.name}/{institution_name}"
+                try:
+                    link_request = LinkTokenCreateRequest(
+                        user=LinkTokenCreateRequestUser(client_user_id='finance_sync_user'),
+                        client_name='Finance Sync',
+                        language='en',
+                        country_codes=[CountryCode('US')],
+                        access_token=existing_access_token,
+                        additional_consented_products=[Products('transactions')],
+                        transactions={"days_requested": 730},
+                        optional_products=[
+                            Products('investments'),
+                            Products('liabilities'),
+                            Products('identity'),
+                        ],
+                    )
+                    response = client.link_token_create(link_request)
+                    token_val = (
+                        response.get('link_token')
+                        if isinstance(response, dict)
+                        else response.link_token
+                    )
+                    update_tokens[label] = token_val
+                    logger.info(f"Generated update token for {label}")
+
+                except Exception as e:
+                    logger.error(f"Failed to generate update token for {label}: {e}")
+                    update_tokens[label] = f"ERROR: {str(e)}"
+
+        if not update_tokens:
+            return jsonify({
+                'success': False,
+                'message': 'No access tokens found across any configured profile.'
+            }), 404
+
+        successful_count = sum(
+            1 for t in update_tokens.values() if not str(t).startswith('ERROR')
+        )
+        print(
+            f"\n✓ Generated {successful_count}/{total_found} update link tokens "
+            f"across {len(profiles)} profile(s)"
+        )
         return jsonify({
             'success': True,
             'update_tokens': update_tokens,
-            'total': len(tokens),
-            'successful': successful_count
+            'total': total_found,
+            'successful': successful_count,
         })
 
     except Exception as e:
@@ -500,71 +640,76 @@ def generate_all_update_link_tokens():
 @app.route('/update_link_token', methods=['POST'])
 def generate_update_link_token():
     """
-    Generates a Plaid Link Token in UPDATE mode for an existing connection.
-    This adds investment endpoints.
+    Generate a Plaid Link token in UPDATE mode for a single existing institution.
+
+    Auto-detects which Plaid profile (PRIMARY, SECONDARY, …) owns the institution
+    by scanning every profile's token prefix in the environment. The caller only
+    needs to supply the institution name — no manual profile selection required.
     """
     try:
         data = request.get_json() or {}
-        institution_name = data.get('institution') # e.g., 'fidelity', 'robinhood'
+        institution_name = data.get('institution', '').strip()
 
         if not institution_name:
             return jsonify({
                 'success': False,
-                'message': 'Missing target institution name'
+                'message': 'Missing institution name.'
             }), 400
 
-        # 1. Fetch your existing access token from your environment configuration
-        profile = _get_requested_profile()
-        env_key = f"{profile.token_prefix}{institution_name.upper()}"
-        existing_access_token = os.environ.get(env_key)
+        # Auto-detect which profile owns this institution's access token.
+        profile, env_key, existing_access_token = _find_profile_for_institution(institution_name)
 
-        if not existing_access_token:
+        if not profile:
+            all_profiles = plaid_integration.get_plaid_profiles()
+            checked = [p.token_prefix + institution_name.upper() for p in all_profiles]
             return jsonify({
                 'success': False,
-                'message': f'Existing access token not found in .env for: {env_key}'
+                'message': (
+                    f"No access token found for '{institution_name.upper()}' in any profile. "
+                    f"Checked env keys: {checked}"
+                )
             }), 404
 
-        # Import required Plaid models
-        from plaid.model.link_token_create_request import LinkTokenCreateRequest
-        from plaid.model.link_token_create_request_user import (
-            LinkTokenCreateRequestUser
+        logger.info(
+            f"Generating update token for {institution_name.upper()} "
+            f"using profile '{profile.name}' (env key: {env_key})"
         )
+
+        from plaid.model.link_token_create_request import LinkTokenCreateRequest
+        from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
         from plaid.model.products import Products
         from plaid.model.country_code import CountryCode
 
-        # 3. Formulate the update token query
         link_request = LinkTokenCreateRequest(
             user=LinkTokenCreateRequestUser(client_user_id='finance_sync_user'),
             client_name='Finance Sync',
             language='en',
             country_codes=[CountryCode('US')],
-            
-            # Crucial: This access token tells Plaid to update, not create
-            access_token=existing_access_token, 
-            
-            # Appends investment capability to the account
+            access_token=existing_access_token,
             additional_consented_products=[Products('transactions')],
-            transactions={ "days_requested": 730 },  # Forces the 24-month historical pull
-
+            transactions={"days_requested": 730},
             optional_products=[
-                Products('investments'),        # Investment holdings and transactions
-                Products('liabilities'),        # Loan/credit data (interest rates, payments)
-                Products('identity'),           # User identity information
-                Products('signal'),             # Transaction scores/risk analysis
-                Products('statements'),         # Account statements
-            ]
+                Products('investments'),
+                Products('liabilities'),
+                Products('identity'),
+                Products('signal'),
+                Products('statements'),
+            ],
         )
 
-        # 4. Generate the token from Plaid's SDK
         client = plaid_integration.get_plaid_client(profile)
         response = client.link_token_create(link_request)
 
-        print(f"\n✓ Generated Update Link Token for {institution_name.upper()}")
+        print(
+            f"\n✓ Generated Update Link Token for {institution_name.upper()} "
+            f"(profile: {profile.name})"
+        )
 
         return jsonify({
             'success': True,
             'link_token': response.link_token,
-            'is_update': True  # Tells your frontend HTML template to skip the /exchange route
+            'is_update': True,
+            'profile': profile.name,
         })
 
     except Exception as e:

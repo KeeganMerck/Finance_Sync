@@ -20,7 +20,7 @@ from datetime import date
 from typing import List, Optional
 
 from ..core.config import USE_PLAID, DATABASE_PATH, ENABLE_DATABASE, DRY_RUN, GOOGLE_SHEETS_ENABLED, GOOGLE_SHEETS_SPREADSHEET_NAME, GOOGLE_SHEETS_CREDENTIALS_PATH
-from .database import upsert_snapshots as db_upsert_snapshots, get_latest_balances as db_get_latest_balances, get_balance_history as db_get_balance_history, get_net_worth_history as db_get_net_worth_history
+from .database import upsert_snapshots as db_upsert_snapshots, get_latest_balances as db_get_latest_balances, get_balance_history as db_get_balance_history, get_net_worth_history as db_get_net_worth_history, get_latest_manual_snapshots as db_get_latest_manual_snapshots
 from ..api import plaid_integration
 
 import gspread
@@ -118,6 +118,46 @@ def fetch_balances() -> list[dict]:
 
     logger.info(f"Fetched {len(all_balances)} total account balance snapshot(s).")
     return all_balances
+
+
+def fetch_manual_balances() -> list[dict]:
+    """
+    Read the most recent manual entry for each account in manual_account_snapshots
+    and return them stamped with today's date, ready to upsert into account_snapshots.
+
+    This makes manually-entered accounts (car loans, home equity, crypto wallets, etc.)
+    flow through the same balance storage and Google Sheets export pipeline as
+    Plaid-linked accounts — no special-casing needed downstream.
+
+    Behaviour:
+      - For each unique account_id in manual_account_snapshots, the row with the
+        highest snapshot_date is selected (represents the most recently entered value).
+      - snapshot_date is overwritten with today's date before returning, so the
+        account_snapshots table always records when the value was last observed
+        by the pipeline (consistent with how Plaid balances are timestamped).
+      - All other fields (account_name, institution, type, balances, currency)
+        are carried over unchanged from the manual row.
+
+    Returns:
+        List of snapshot dicts ready for upsert_snapshots(). Empty if the manual
+        table has no rows or the database is disabled.
+    """
+    raw = db_get_latest_manual_snapshots()
+    if not raw:
+        logger.debug("No manual account snapshots found — skipping.")
+        return []
+
+    today = date.today().isoformat()
+    stamped = []
+    for row in raw:
+        snapshot = dict(row)
+        snapshot['snapshot_date'] = today
+        stamped.append(snapshot)
+
+    logger.info(
+        f"Prepared {len(stamped)} manual account snapshot(s) for today ({today})."
+    )
+    return stamped
 
 
 def _get_accounts_with_balances(access_token: str, profile=None) -> list[dict]:

@@ -86,8 +86,18 @@ PLAID_FORCE_REFRESH: bool = os.getenv('PLAID_FORCE_REFRESH', 'true').lower() == 
 #   - "full" -> fetch transactions from the last FULL_SYNC_LOOKBACK_DAYS days
 #   - "incremental" -> fetch from the latest DB date minus INCREMENTAL_SYNC_BUFFER_DAYS
 SYNC_MODE: str = os.getenv('SYNC_MODE', 'full').strip().lower()
-FULL_SYNC_LOOKBACK_DAYS: int = int(os.getenv('FULL_SYNC_LOOKBACK_DAYS', '14'))  # 14-day rolling window
-INCREMENTAL_SYNC_BUFFER_DAYS: int = int(os.getenv('INCREMENTAL_SYNC_BUFFER_DAYS', '14'))
+
+# Rolling window for institutions that already have data in the DB.
+# 14 days catches pending→posted transitions and any recent corrections.
+ROLLING_SYNC_DAYS: int = int(os.getenv('ROLLING_SYNC_DAYS', '14'))
+
+# How far back to fetch for a brand-new institution (no DB records for it yet).
+# Plaid supports up to 730 days (2 years) of history on most institutions.
+INITIAL_SYNC_LOOKBACK_DAYS: int = int(os.getenv('INITIAL_SYNC_LOOKBACK_DAYS', '730'))
+
+# Legacy aliases kept for backward compatibility — map to the new names.
+FULL_SYNC_LOOKBACK_DAYS: int = INITIAL_SYNC_LOOKBACK_DAYS
+INCREMENTAL_SYNC_BUFFER_DAYS: int = ROLLING_SYNC_DAYS
 
 # ─── Plaid Credentials  ────────────────────────────────────────────────
 

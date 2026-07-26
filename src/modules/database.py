@@ -520,19 +520,14 @@ def get_uncategorized_transactions(db_path: Path = DATABASE_PATH) -> list[dict]:
 
 def get_latest_transaction_date(db_path: Path = DATABASE_PATH) -> Optional[str]:
     """
-    Return the ISO 8601 date of the most recent transaction in the database.
-
-    Used for incremental sync to determine the starting date for the next Plaid
-    API query. If a transaction dated 2024-03-15 is the most recent, the next
-    sync will fetch from (2024-03-15 - 7 days) to catch any late-posted transactions.
+    Return the ISO 8601 date of the most recent transaction across ALL institutions.
 
     Args:
         db_path: Path to the database.
 
     Returns:
-        Most recent transaction date as ISO 8601 string (YYYY-MM-DD), or None if:
-          - Database is disabled (ENABLE_DATABASE is False)
-          - Transactions table is empty
+        Most recent transaction date as ISO 8601 string (YYYY-MM-DD), or None if
+        the database is disabled or empty.
     """
     if not ENABLE_DATABASE:
         logger.info("Database disabled — get_latest_transaction_date returning None.")
@@ -543,6 +538,52 @@ def get_latest_transaction_date(db_path: Path = DATABASE_PATH) -> Optional[str]:
         result = cursor.fetchone()[0]
 
     logger.debug(f"Latest transaction date in database: {result or '(empty)'}")
+    return result
+
+
+def get_latest_transaction_date_for_institution(
+    institution: str,
+    db_path: Path = DATABASE_PATH,
+) -> Optional[str]:
+    """
+    Return the ISO 8601 date of the most recent transaction for a specific institution.
+
+    Used by the per-institution sync logic so that:
+      - An institution with existing DB records uses a short rolling window
+        (no need to re-download full history every run).
+      - A brand-new institution with zero DB records returns None, triggering
+        a full initial history fetch regardless of what other institutions have.
+
+    The institution string matches the token key suffix — e.g. 'CHASE' for the
+    token stored as PLAID_PRODUCTION_TOKEN_CHASE. This is the same value written
+    into the 'institution' column by sync.py.
+
+    Args:
+        institution: Institution name as stored in the DB (e.g. 'CHASE', 'AMEX').
+        db_path:     Path to the database.
+
+    Returns:
+        Most recent transaction date as ISO 8601 string (YYYY-MM-DD), or None if:
+          - Database is disabled
+          - No transactions exist for this institution (first sync for this account)
+    """
+    if not ENABLE_DATABASE:
+        logger.debug(
+            f"Database disabled — get_latest_transaction_date_for_institution "
+            f"returning None for '{institution}'."
+        )
+        return None
+
+    with _get_connection(db_path) as conn:
+        cursor = conn.execute(
+            "SELECT MAX(date) FROM transactions WHERE institution = ?",
+            (institution,),
+        )
+        result = cursor.fetchone()[0]
+
+    logger.debug(
+        f"Latest transaction date for '{institution}': {result or '(none — new institution)'}"
+    )
     return result
 
 

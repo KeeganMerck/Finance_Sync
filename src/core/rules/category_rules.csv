@@ -66,6 +66,7 @@ contains,merchant,AUTOMATIC PAYMENT,,,true
 contains,merchant,AMEX EPAYMENT,,,true
 contains,merchant,CHASE CREDIT CRD,,,true
 contains,merchant,Payment Thank You-Mobile,,,true
+contains,merchant,Ameriprise,,,true
 contains,account AND merchant,6 MONTH CERTIFICATE|Renewed,,,true
 #
 # ── GROUP 2: PAYCHECK ────────────────────────────────────────────────────────
@@ -76,7 +77,7 @@ contains,account AND merchant,6 MONTH CERTIFICATE|Renewed,,,true
 #
 contains,merchant,Deposit ACH WELLS FARGO BANK,Paycheck,,
 contains,merchant,Share 0000 REF HEALTH INSURANCE,Paycheck,,
-
+contains,merchant,Transfer,,,true
 #
 # Ameriprise account fee credits
 contains,merchant,AEIS,Subscriptions,,

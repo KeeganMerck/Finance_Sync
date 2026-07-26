@@ -86,7 +86,7 @@ PLAID_FORCE_REFRESH: bool = os.getenv('PLAID_FORCE_REFRESH', 'true').lower() == 
 #   - "full" -> fetch transactions from the last FULL_SYNC_LOOKBACK_DAYS days
 #   - "incremental" -> fetch from the latest DB date minus INCREMENTAL_SYNC_BUFFER_DAYS
 SYNC_MODE: str = os.getenv('SYNC_MODE', 'full').strip().lower()
-FULL_SYNC_LOOKBACK_DAYS: int = int(os.getenv('FULL_SYNC_LOOKBACK_DAYS', '730'))  # 2 years
+FULL_SYNC_LOOKBACK_DAYS: int = int(os.getenv('FULL_SYNC_LOOKBACK_DAYS', '14'))  # 14-day rolling window
 INCREMENTAL_SYNC_BUFFER_DAYS: int = int(os.getenv('INCREMENTAL_SYNC_BUFFER_DAYS', '14'))
 
 # ─── Plaid Credentials  ────────────────────────────────────────────────

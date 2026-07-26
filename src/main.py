@@ -166,13 +166,19 @@ def run_pipeline() -> None:
     #
     logger.info("Stage 3/5 — Persisting to database...")
 
+    upsert_result = {"written": 0, "unchanged": 0, "total": 0}
     if not ENABLE_DATABASE:
         logger.info("  Database disabled via config — skipping persistence.")
     else:
         try:
             init_db()
-            upserted = upsert_transactions(transactions)
-            logger.info(f"  Upserted {upserted} transaction(s) to SQLite.")
+            upsert_result = upsert_transactions(transactions)
+            logger.info(
+                f"  Written (new or changed) : {upsert_result['written']}"
+            )
+            logger.info(
+                f"  Unchanged (skipped)      : {upsert_result['unchanged']}"
+            )
         except Exception:
             logger.exception(
                 "Non-fatal: database write failed. "
@@ -216,9 +222,12 @@ def run_pipeline() -> None:
 
     logger.info(separator)
     logger.info("Finance Sync — Pipeline Complete")
-    logger.info(f"  Transactions processed : {len(transactions)}")
-    logger.info(f"  Categorized           : {categorized_count}")
-    logger.info(f"  Uncategorized         : {uncategorized_count}")
+    logger.info(f"  Transactions processed    : {len(transactions)}")
+    logger.info(f"  Categorized               : {categorized_count}")
+    logger.info(f"  Uncategorized             : {uncategorized_count}")
+    if ENABLE_DATABASE:
+        logger.info(f"  DB written (new/changed)  : {upsert_result['written']}")
+        logger.info(f"  DB unchanged (skipped)    : {upsert_result['unchanged']}")
 
     for export_name, row_count in export_summary.items():
         verb = "Would export" if DRY_RUN else "Exported"

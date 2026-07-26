@@ -31,7 +31,7 @@ from .modules.categorizer import categorize_transactions, load_rules
 from .modules.database import get_all_transactions, init_db, upsert_transactions
 from .modules.export import run_exports
 from .modules.google_sheets import update_google_sheet
-from .modules.balance import fetch_balances, upsert_snapshots as upsert_balance_snapshots, export_to_sheets as export_balances_to_sheets
+from .modules.balance import fetch_balances, fetch_manual_balances, upsert_snapshots as upsert_balance_snapshots, export_to_sheets as export_balances_to_sheets
 
 
 # ─── Logging Configuration ─────────────────────────────────────────────────────
@@ -111,19 +111,31 @@ def run_pipeline() -> None:
     #
     logger.info("Stage 1b/5 — Fetching and storing account balances...")
     try:
+        # ── Plaid balances ────────────────────────────────────────────────────
         if not USE_PLAID:
-            logger.info("  Balance fetch requires Plaid (USE_PLAID=True) — skipping.")
+            logger.info("  Plaid balance fetch skipped (USE_PLAID=False).")
+            plaid_balances = []
         else:
-            balances = fetch_balances()
-            if balances:
-                upserted = upsert_balance_snapshots(balances)
-                logger.info(f"  Upserted {upserted} account balance snapshot(s).")
-                
-                # Export to Google Sheets
-                balance_export_summary = export_balances_to_sheets(dry_run=DRY_RUN)
-                logger.info(f"  Balance export: {balance_export_summary}")
-            else:
-                logger.info("  No balance data fetched — skipping balance storage and export.")
+            plaid_balances = fetch_balances()
+            logger.info(f"  Plaid: {len(plaid_balances)} account balance(s) fetched.")
+
+        # ── Manual account balances ───────────────────────────────────────────
+        # Reads the most recent row per account from manual_account_snapshots
+        # and stamps it with today's date — no Plaid required.
+        manual_balances = fetch_manual_balances()
+        logger.info(f"  Manual: {len(manual_balances)} account balance(s) prepared.")
+
+        # ── Merge and upsert ──────────────────────────────────────────────────
+        all_balances = plaid_balances + manual_balances
+        if all_balances:
+            upserted = upsert_balance_snapshots(all_balances)
+            logger.info(f"  Upserted {upserted} total account balance snapshot(s) to SQLite.")
+
+            # Export to Google Sheets
+            balance_export_summary = export_balances_to_sheets(dry_run=DRY_RUN)
+            logger.info(f"  Balance export: {balance_export_summary}")
+        else:
+            logger.info("  No balance data (Plaid or manual) — skipping storage and export.")
     except Exception:
         logger.exception(
             "Non-fatal: balance fetch and storage failed. "

@@ -115,6 +115,47 @@ _CREATE_SNAPSHOT_DATE_INDEX = """
     ON account_snapshots(snapshot_date);
 """
 
+# ─── Manual Account Snapshots Table ──────────────────────────────────────────────
+#
+# Stores hand-entered balance data for accounts that cannot be linked via Plaid
+# (e.g. a car loan at a local credit union, home equity estimate, crypto wallet).
+#
+# Schema is identical to account_snapshots. snapshot_date here represents the date
+# the value was entered / became effective — you can have multiple rows per account
+# to track history. On each sync run the pipeline reads the most recent row per
+# account_id and copies it into account_snapshots dated today, so manual accounts
+# flow through the same export/Sheets pipeline as Plaid-linked accounts.
+#
+# Editing: INSERT rows directly in any SQLite browser (e.g. DB Browser for SQLite).
+# Primary key prevents accidental duplicate entries for the same account on the
+# same date.
+
+_CREATE_MANUAL_ACCOUNT_SNAPSHOTS_TABLE = """
+    CREATE TABLE IF NOT EXISTS manual_account_snapshots (
+        snapshot_date     TEXT    NOT NULL,
+        account_id        TEXT    NOT NULL,
+        account_name      TEXT,
+        institution       TEXT,
+        account_type      TEXT,
+        account_subtype   TEXT,
+        current_balance   REAL,
+        available_balance REAL,
+        credit_limit      REAL,
+        currency          TEXT DEFAULT 'USD',
+        PRIMARY KEY (snapshot_date, account_id)
+    );
+"""
+
+_CREATE_MANUAL_SNAPSHOT_DATE_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_manual_account_snapshots_date
+    ON manual_account_snapshots(snapshot_date);
+"""
+
+_CREATE_MANUAL_SNAPSHOT_ACCOUNT_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_manual_account_snapshots_account_id
+    ON manual_account_snapshots(account_id);
+"""
+
 
 # ─── Connection Management ─────────────────────────────────────────────────────
 
@@ -204,6 +245,9 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         # Initialize account snapshots table
         init_account_snapshots(db_path)
 
+        # Initialize manual account snapshots table
+        init_manual_account_snapshots(db_path)
+
     logger.info("Database schema initialized successfully.")
 
 
@@ -226,6 +270,28 @@ def init_account_snapshots(db_path: Path = DATABASE_PATH) -> None:
         conn.execute(_CREATE_SNAPSHOT_DATE_INDEX)
 
     logger.debug("Account snapshots table initialized successfully.")
+
+
+def init_manual_account_snapshots(db_path: Path = DATABASE_PATH) -> None:
+    """
+    Create the manual_account_snapshots table and indexes if they don't already exist.
+
+    Safe to call on every startup — all DDL uses IF NOT EXISTS. No data
+    is altered when called against an existing populated database.
+
+    Args:
+        db_path: Path to the SQLite database file.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping manual account snapshots init.")
+        return
+
+    with _get_connection(db_path) as conn:
+        conn.execute(_CREATE_MANUAL_ACCOUNT_SNAPSHOTS_TABLE)
+        conn.execute(_CREATE_MANUAL_SNAPSHOT_DATE_INDEX)
+        conn.execute(_CREATE_MANUAL_SNAPSHOT_ACCOUNT_INDEX)
+
+    logger.debug("Manual account snapshots table initialized successfully.")
 
 
 # ─── Write Operations ──────────────────────────────────────────────────────────
@@ -655,6 +721,50 @@ def get_latest_balances(db_path: Path = DATABASE_PATH) -> list[dict]:
         rows = cursor.fetchall()
 
     logger.debug(f"Retrieved {len(rows)} latest account balance snapshot(s).")
+    return [dict(row) for row in rows]
+
+
+def get_latest_manual_snapshots(db_path: Path = DATABASE_PATH) -> list[dict]:
+    """
+    Return the most recent manual entry for each unique account_id.
+
+    Called once per sync run so the pipeline can stamp the latest manual
+    balance with today's date and upsert it into account_snapshots, making
+    manual accounts flow through the same Sheets export as Plaid accounts.
+
+    The query uses the same pattern as get_latest_balances() — one row per
+    account_id, chosen by MAX(snapshot_date) over the manual table.
+
+    Args:
+        db_path: Path to the database.
+
+    Returns:
+        List of manual snapshot dicts, one per unique account_id.
+        Returns empty list if database is disabled or the table is empty.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — get_latest_manual_snapshots returning empty list.")
+        return []
+
+    with _get_connection(db_path) as conn:
+        cursor = conn.execute(
+            """
+            SELECT * FROM manual_account_snapshots
+            WHERE (snapshot_date, account_id) IN (
+                SELECT snapshot_date, account_id
+                FROM manual_account_snapshots
+                GROUP BY account_id
+                HAVING snapshot_date = MAX(snapshot_date)
+            )
+            ORDER BY institution, account_name
+            """
+        )
+        rows = cursor.fetchall()
+
+    logger.debug(
+        f"Retrieved {len(rows)} latest manual account snapshot(s) "
+        f"({len(set(dict(r)['account_id'] for r in rows))} unique account(s))."
+    )
     return [dict(row) for row in rows]
 
 

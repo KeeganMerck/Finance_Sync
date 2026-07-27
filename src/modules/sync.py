@@ -23,6 +23,7 @@ from ..core.config import (
 )
 from ..api import plaid_integration
 from .database import get_latest_transaction_date_for_institution
+from .connection_recovery import is_login_error, prompt_reconnect
 
 logger = logging.getLogger(__name__)
 
@@ -159,92 +160,123 @@ def _fetch_from_plaid() -> list[dict]:
         )
 
         for institution_name, access_token in access_tokens.items():
-            try:
-                logger.info(f"Processing institution: {profile.name}/{institution_name}")
-
-                # ─── Determine start date (per institution) ────────────────────
-                #
-                # We look up the latest date FOR THIS INSTITUTION SPECIFICALLY,
-                # not the global DB max. This ensures:
-                #   - A brand-new institution (no DB records) always gets a full
-                #     initial history fetch (INITIAL_SYNC_LOOKBACK_DAYS, up to 730).
-                #   - An existing institution uses a short rolling window
-                #     (ROLLING_SYNC_DAYS) to catch pending→posted changes and
-                #     any recent corrections without re-downloading full history.
-                #
-                latest_db_date = get_latest_transaction_date_for_institution(institution_name)
-
-                if latest_db_date:
-                    # Institution has existing records — use rolling window.
-                    latest_date_obj = datetime.fromisoformat(latest_db_date).date()
-                    start_date = latest_date_obj - timedelta(days=ROLLING_SYNC_DAYS)
-                    logger.info(
-                        f"  Existing institution — rolling sync from {start_date} "
-                        f"(DB latest: {latest_db_date}, window: {ROLLING_SYNC_DAYS} days)"
-                    )
-                else:
-                    # New institution — fetch full available history.
-                    start_date = end_date - timedelta(days=INITIAL_SYNC_LOOKBACK_DAYS)
-                    logger.info(
-                        f"  New institution — initial fetch from {start_date} "
-                        f"({INITIAL_SYNC_LOOKBACK_DAYS} days back)"
-                    )
-
-                # ─── Refresh Plaid data before fetching history ───────────────────
-                if PLAID_FORCE_REFRESH:
-                    plaid_integration.refresh_transactions(access_token, profile)
-
-                # ─── Fetch transactions and accounts ────────────────────────────────
-
-                # Get accounts for this institution to build account_id → name lookup
-                accounts = plaid_integration.get_accounts(access_token, profile)
-                account_lookup = {
-                    acct['account_id']: f"{acct['name']} ••{acct['mask']}"
-                    for acct in accounts
-                }
-
-                logger.debug(f"  Resolved {len(account_lookup)} account(s).")
-
-                # Fetch transactions for the determined date range
-                plaid_transactions = plaid_integration.get_transactions(
-                    access_token=access_token,
-                    start_date=start_date,
-                    end_date=end_date,
-                    profile=profile,
-                )
-
-                # ─── Normalize and tag with institution ────────────────────────────
-
-                for txn in plaid_transactions:
-                    # Replace account_id with human-readable name
-                    account_id = txn.get('account')
-                    if account_id in account_lookup:
-                        txn['account'] = account_lookup[account_id]
+            # Allow one reconnect+retry per institution.  The inner loop runs
+            # at most twice: attempt 0 (normal), and attempt 1 (after the user
+            # re-links via link_setup).  Any non-login error, a second failure,
+            # or a declined/timed-out reconnect prompt breaks the loop.
+            for attempt in range(2):
+                try:
+                    if attempt == 0:
+                        logger.info(f"Processing institution: {profile.name}/{institution_name}")
                     else:
-                        # Fallback if lookup fails (shouldn't happen, but be safe)
-                        txn['account'] = account_id
+                        logger.info(
+                            f"Retrying {profile.name}/{institution_name} "
+                            f"after reconnect..."
+                        )
 
-                    # Tag with institution name
-                    txn['institution'] = institution_name
+                    # ─── Determine start date (per institution) ────────────────
+                    #
+                    # We look up the latest date FOR THIS INSTITUTION SPECIFICALLY,
+                    # not the global DB max. This ensures:
+                    #   - A brand-new institution (no DB records) always gets a
+                    #     full initial history fetch (INITIAL_SYNC_LOOKBACK_DAYS).
+                    #   - An existing institution uses a short rolling window
+                    #     (ROLLING_SYNC_DAYS) to catch pending→posted changes and
+                    #     any recent corrections without re-downloading full history.
+                    #
+                    latest_db_date = get_latest_transaction_date_for_institution(institution_name)
 
-                dates = [txn.get('date') for txn in plaid_transactions if txn.get('date')]
-                oldest_date = min(dates) if dates else None
-                newest_date = max(dates) if dates else None
+                    if latest_db_date:
+                        # Institution has existing records — use rolling window.
+                        latest_date_obj = datetime.fromisoformat(latest_db_date).date()
+                        start_date = latest_date_obj - timedelta(days=ROLLING_SYNC_DAYS)
+                        logger.info(
+                            f"  Existing institution — rolling sync from {start_date} "
+                            f"(DB latest: {latest_db_date}, window: {ROLLING_SYNC_DAYS} days)"
+                        )
+                    else:
+                        # New institution — fetch full available history.
+                        start_date = end_date - timedelta(days=INITIAL_SYNC_LOOKBACK_DAYS)
+                        logger.info(
+                            f"  New institution — initial fetch from {start_date} "
+                            f"({INITIAL_SYNC_LOOKBACK_DAYS} days back)"
+                        )
 
-                logger.info(
-                    f"  {profile.name}/{institution_name}: fetched {len(plaid_transactions)} transaction(s)"
-                    f" from {oldest_date or 'n/a'} to {newest_date or 'n/a'}"
-                )
+                    # ─── Refresh Plaid data before fetching history ───────────
+                    if PLAID_FORCE_REFRESH:
+                        plaid_integration.refresh_transactions(access_token, profile)
 
-                all_transactions.extend(plaid_transactions)
+                    # ─── Fetch transactions and accounts ─────────────────────
 
-            except Exception as e:
-                logger.exception(
-                    f"Error processing {institution_name} — skipping this institution. "
-                    f"Error: {e}"
-                )
-                # Don't re-raise — continue processing other institutions
-                # The pipeline is resilient to partial failures
+                    # Get accounts for this institution to build account_id → name lookup
+                    accounts = plaid_integration.get_accounts(access_token, profile)
+                    account_lookup = {
+                        acct['account_id']: f"{acct['name']} ••{acct['mask']}"
+                        for acct in accounts
+                    }
+
+                    logger.debug(f"  Resolved {len(account_lookup)} account(s).")
+
+                    # Fetch transactions for the determined date range
+                    plaid_transactions = plaid_integration.get_transactions(
+                        access_token=access_token,
+                        start_date=start_date,
+                        end_date=end_date,
+                        profile=profile,
+                    )
+
+                    # ─── Normalize and tag with institution ───────────────────
+
+                    for txn in plaid_transactions:
+                        # Replace account_id with human-readable name
+                        account_id = txn.get('account')
+                        if account_id in account_lookup:
+                            txn['account'] = account_lookup[account_id]
+                        else:
+                            # Fallback if lookup fails (shouldn't happen, but be safe)
+                            txn['account'] = account_id
+
+                        # Tag with institution name
+                        txn['institution'] = institution_name
+
+                    dates = [txn.get('date') for txn in plaid_transactions if txn.get('date')]
+                    oldest_date = min(dates) if dates else None
+                    newest_date = max(dates) if dates else None
+
+                    logger.info(
+                        f"  {profile.name}/{institution_name}: fetched {len(plaid_transactions)} transaction(s)"
+                        f" from {oldest_date or 'n/a'} to {newest_date or 'n/a'}"
+                    )
+
+                    all_transactions.extend(plaid_transactions)
+                    break  # success — move on to the next institution
+
+                except Exception as e:
+                    # ── Login/credential error on first attempt ────────────────
+                    # Offer an interactive reconnect flow before giving up.
+                    if attempt == 0 and is_login_error(e):
+                        logger.warning(
+                            f"Login/credential error for {institution_name} "
+                            f"(HTTP {getattr(e, 'status', '?')}). "
+                            f"Prompting for reconnect..."
+                        )
+                        should_retry = prompt_reconnect(institution_name, profile.name)
+                        if should_retry:
+                            continue  # go to attempt 1
+                        # User declined or timed out — fall through to skip
+                        logger.warning(
+                            f"Skipping {institution_name} — reconnect not attempted."
+                        )
+                        break
+
+                    # ── All other errors, or second attempt also failed ────────
+                    logger.exception(
+                        f"Error processing {institution_name} — skipping this institution. "
+                        f"Error: {e}"
+                    )
+                    # Don't re-raise — continue processing other institutions.
+                    # The pipeline is resilient to partial failures.
+                    break
 
     logger.info(
         f"Plaid fetch complete: {len(all_transactions)} total transaction(s) "

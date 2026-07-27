@@ -27,6 +27,7 @@ import os
 from datetime import datetime
 
 from flask import Flask, render_template_string, request, jsonify
+import threading
 
 from .core.config import PLAID_ENV
 from .api import plaid_integration
@@ -718,6 +719,27 @@ def generate_update_link_token():
             'success': False,
             'message': f'Update setup failed: {str(e)}'
         }), 500
+
+
+# ─── Shutdown Route ───────────────────────────────────────────────────────
+
+@app.route('/shutdown', methods=['POST'])
+def shutdown():
+    """
+    Cleanly stop the Flask development server.
+
+    Called by connection_recovery.py after the user confirms they have
+    re-linked their institution.  We schedule the shutdown on a background
+    thread so Flask can still send back the 200 response before the process
+    exits.
+    """
+    def _stop():
+        import time as _time
+        _time.sleep(0.5)          # brief pause so the response is delivered
+        os._exit(0)               # hard exit — kills the Flask dev server cleanly
+
+    threading.Thread(target=_stop, daemon=True).start()
+    return jsonify({'status': 'shutting down'}), 200
 
 
 # ─── Startup Instructions ─────────────────────────────────────────────────

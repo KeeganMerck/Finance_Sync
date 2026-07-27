@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Finance Dashboard{% endblock %}</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            surface: '#1e293b',
+            base: '#0f172a',
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <style>
+    /* Scrollable table wrapper */
+    .table-scroll { overflow-x: auto; }
+
+    /* Sticky category column + month header */
+    .pivot-table thead th { position: sticky; top: 0; z-index: 10; }
+    .pivot-table td:first-child,
+    .pivot-table th:first-child { position: sticky; left: 0; z-index: 5; }
+    .pivot-table thead th:first-child { z-index: 20; }
+
+    /* Row hover */
+    .pivot-table tbody tr:hover td { background: #1e3a5f !important; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #1e293b; }
+    ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+
+    /* Fade-in */
+    .fade-in { animation: fadeIn .25s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
+
+    /* Loading spinner */
+    .spinner {
+      width: 32px; height: 32px;
+      border: 3px solid #334155;
+      border-top-color: #38bdf8;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      margin: 40px auto;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+
+<body class="bg-base text-slate-100 min-h-screen font-sans antialiased">
+
+  <!-- ── Navigation ── -->
+  <nav class="bg-surface border-b border-slate-700 sticky top-0 z-50">
+    <div class="max-w-screen-2xl mx-auto px-6 flex items-center h-14 gap-8">
+      <span class="text-sky-400 font-bold tracking-tight text-lg select-none">
+        💰 Finance
+      </span>
+      <div class="flex gap-1 text-sm">
+        {% set nav = [
+          ('/', 'Dashboard'),
+          ('/spend', 'Spend'),
+          ('/projections', 'Projections'),
+          ('/networth', 'Net Worth'),
+        ] %}
+        {% for href, label in nav %}
+          <a href="{{ href }}"
+             class="px-3 py-1.5 rounded-md transition-colors
+                    {% if request.path == href %}
+                      bg-sky-500/20 text-sky-300 font-medium
+                    {% else %}
+                      text-slate-400 hover:text-slate-100 hover:bg-slate-700
+                    {% endif %}">
+            {{ label }}
+          </a>
+        {% endfor %}
+      </div>
+
+      <div class="ml-auto text-xs text-slate-500" id="last-sync-nav"></div>
+    </div>
+  </nav>
+
+  <!-- ── Page content ── -->
+  <main class="max-w-screen-2xl mx-auto px-6 py-8">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- ── Shared JS utilities ── -->
+  <script>
+    /* ── Formatting helpers ─────────────────────────────────────── */
+    const fmt = new Intl.NumberFormat('en-US', { style:'currency', currency:'USD', minimumFractionDigits:2 });
+    const fmtK = (v) => {
+      const abs = Math.abs(v);
+      if (abs >= 1_000_000) return (v/1_000_000).toFixed(2) + 'M';
+      if (abs >= 1_000)     return (v/1_000).toFixed(1) + 'K';
+      return fmt.format(v);
+    };
+    const fmtAmt = (v) => fmt.format(v);
+
+    /* amount → coloured span */
+    function amtSpan(v, { invert = false } = {}) {
+      const display = fmtAmt(v);
+      const isNeg = invert ? v > 0 : v < 0;
+      const cls = isNeg ? 'text-emerald-400' : (v === 0 ? 'text-slate-400' : 'text-red-400');
+      return `<span class="${cls}">${display}</span>`;
+    }
+
+    /* ── Shared Chart defaults ─────────────────────────────────── */
+    Chart.defaults.color = '#94a3b8';
+    Chart.defaults.borderColor = '#1e293b';
+    Chart.defaults.font.family = 'system-ui, sans-serif';
+
+    /* ── Last-sync stamp ───────────────────────────────────────── */
+    fetch('/api/summary')
+      .then(r => r.json())
+      .then(d => {
+        if (d.last_sync) {
+          const el = document.getElementById('last-sync-nav');
+          if (el) el.textContent = 'Last sync: ' + d.last_sync.slice(0,10);
+        }
+      }).catch(() => {});
+  </script>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

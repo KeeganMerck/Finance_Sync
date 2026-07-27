@@ -1,0 +1,272 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Finance{% endblock %}
+
+{% block content %}
+<div class="space-y-8 fade-in">
+
+  <!-- ── Page header ── -->
+  <div>
+    <h1 class="text-2xl font-bold text-slate-100">Dashboard</h1>
+    <p class="text-sm text-slate-400 mt-1" id="month-label">Loading…</p>
+  </div>
+
+  <!-- ── Summary cards ── -->
+  <div class="grid grid-cols-2 lg:grid-cols-4 gap-4" id="cards">
+    {% for _ in range(4) %}
+    <div class="bg-surface rounded-xl p-5 border border-slate-700 animate-pulse">
+      <div class="h-3 bg-slate-700 rounded w-1/2 mb-3"></div>
+      <div class="h-7 bg-slate-700 rounded w-3/4"></div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- ── Mini spend table + trend charts ── -->
+  <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+
+    <!-- Mini spend table (spans 2 cols) -->
+    <div class="xl:col-span-2 bg-surface rounded-xl border border-slate-700 flex flex-col">
+      <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700">
+        <h2 class="font-semibold text-slate-100">Monthly Spend by Category</h2>
+        <a href="/spend" class="text-xs text-sky-400 hover:text-sky-300 transition-colors">
+          Full view →
+        </a>
+      </div>
+      <div class="table-scroll flex-1">
+        <div id="mini-spend-wrap" class="p-4">
+          <div class="spinner"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Monthly net bar chart -->
+    <div class="bg-surface rounded-xl border border-slate-700 flex flex-col">
+      <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700">
+        <h2 class="font-semibold text-slate-100">Monthly Net</h2>
+        <span class="text-xs text-slate-500">Last 12 months</span>
+      </div>
+      <div class="p-4 flex-1 flex items-center">
+        <canvas id="chart-monthly-net" class="w-full"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Net worth trend ── -->
+  <div class="bg-surface rounded-xl border border-slate-700">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700">
+      <h2 class="font-semibold text-slate-100">Net Worth Trend</h2>
+      <a href="/networth" class="text-xs text-sky-400 hover:text-sky-300 transition-colors">
+        Full view →
+      </a>
+    </div>
+    <div class="p-6">
+      <canvas id="chart-networth" height="80"></canvas>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ─── Summary cards ─────────────────────────────────────────────────── */
+fetch('/api/summary')
+  .then(r => r.json())
+  .then(d => {
+    // Header date label
+    const label = document.getElementById('month-label');
+    if (label && d.current_month) {
+      const [y, m] = d.current_month.split('-');
+      const name = new Date(y, m-1, 1).toLocaleString('default',{month:'long',year:'numeric'});
+      label.textContent = name;
+    }
+
+    const cards = [
+      {
+        label: 'Expenses This Month',
+        value: fmtAmt(d.spend_this_month),
+        sub: 'money out',
+        color: 'text-red-400',
+        icon: '↑'
+      },
+      {
+        label: 'Income This Month',
+        value: fmtAmt(Math.abs(d.income_this_month)),
+        sub: 'money in',
+        color: 'text-emerald-400',
+        icon: '↓'
+      },
+      {
+        label: 'Net This Month',
+        value: fmtAmt(Math.abs(d.net_this_month)),
+        sub: d.net_this_month < 0 ? 'saved' : 'over budget',
+        color: d.net_this_month < 0 ? 'text-emerald-400' : 'text-red-400',
+        icon: d.net_this_month < 0 ? '✓' : '!'
+      },
+      {
+        label: 'Net Worth',
+        value: fmtK(d.net_worth),
+        sub: `avg net ${fmtAmt(Math.abs(d.avg_monthly_net))}/mo`,
+        color: d.net_worth >= 0 ? 'text-sky-400' : 'text-red-400',
+        icon: '◈'
+      },
+    ];
+
+    document.getElementById('cards').innerHTML = cards.map(c => `
+      <div class="bg-surface rounded-xl p-5 border border-slate-700">
+        <p class="text-xs text-slate-500 uppercase tracking-wider mb-2">${c.label}</p>
+        <p class="text-2xl font-bold ${c.color}">${c.value}</p>
+        <p class="text-xs text-slate-500 mt-1">${c.icon} ${c.sub}</p>
+      </div>
+    `).join('');
+  })
+  .catch(() => {
+    document.getElementById('cards').innerHTML =
+      '<p class="col-span-4 text-slate-500 text-sm">Could not load summary — run the sync pipeline first.</p>';
+  });
+
+/* ─── Mini spend table (last 6 complete months) ─────────────────────── */
+fetch('/api/spend/monthly')
+  .then(r => r.json())
+  .then(data => {
+    const wrap = document.getElementById('mini-spend-wrap');
+    if (!data.months || data.months.length === 0) {
+      wrap.innerHTML = '<p class="text-slate-500 text-sm p-2">No transaction data yet.</p>';
+      return;
+    }
+
+    // Show last 6 complete months on the mini table
+    const complete = data.complete_months;
+    const months = (complete.length > 0 ? complete : data.months).slice(-6);
+
+    // top 8 categories by |average|
+    const rows = data.rows.slice(0, 8);
+
+    function monthLabel(m) {
+      const [y, mo] = m.split('-');
+      return new Date(y, mo-1, 1).toLocaleString('default',{month:'short'});
+    }
+
+    const thead = `<tr>
+      <th class="bg-surface text-left text-xs text-slate-400 px-3 py-2 font-medium whitespace-nowrap min-w-[140px]">Category</th>
+      ${months.map(m => `<th class="bg-surface text-right text-xs text-slate-400 px-3 py-2 font-medium whitespace-nowrap">${monthLabel(m)}</th>`).join('')}
+      <th class="bg-surface text-right text-xs text-sky-400 px-3 py-2 font-medium whitespace-nowrap">Avg</th>
+    </tr>`;
+
+    const tbody = rows.map((row, i) => {
+      const bg = i % 2 === 0 ? 'bg-base' : 'bg-surface';
+      const cells = months.map(m => {
+        const v = row.monthly[m] ?? null;
+        return `<td class="${bg} text-right px-3 py-2 text-xs">${v !== null ? amtSpan(v) : '<span class="text-slate-600">—</span>'}</td>`;
+      });
+      return `<tr>
+        <td class="${bg} px-3 py-2 text-xs text-slate-300 whitespace-nowrap">${row.category}</td>
+        ${cells.join('')}
+        <td class="${bg} text-right px-3 py-2 text-xs font-medium">${amtSpan(row.average)}</td>
+      </tr>`;
+    }).join('');
+
+    const net = data.net_row;
+    const netCells = months.map(m => {
+      const v = net.monthly[m] ?? null;
+      return `<td class="bg-slate-900 text-right px-3 py-2 text-xs font-semibold">${v !== null ? amtSpan(v) : '—'}</td>`;
+    });
+    const tfoot = `<tr>
+      <td class="bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-300">Net</td>
+      ${netCells.join('')}
+      <td class="bg-slate-900 text-right px-3 py-2 text-xs font-semibold">${amtSpan(net.average)}</td>
+    </tr>`;
+
+    wrap.innerHTML = `
+      <table class="pivot-table w-full text-xs border-collapse">
+        <thead>${thead}</thead>
+        <tbody>${tbody}</tbody>
+        <tfoot>${tfoot}</tfoot>
+      </table>`;
+
+    /* ── Monthly net bar chart ──────────────────────────────────────── */
+    const allMonths = data.months.slice(-12);
+    const netValues = allMonths.map(m => (data.net_row.monthly[m] ?? 0));
+    const barColors = netValues.map(v => v < 0 ? '#4ade80' : '#f87171');
+
+    new Chart(document.getElementById('chart-monthly-net'), {
+      type: 'bar',
+      data: {
+        labels: allMonths.map(m => { const [y,mo]=m.split('-'); return new Date(y,mo-1,1).toLocaleString('default',{month:'short',year:'2-digit'}); }),
+        datasets: [{
+          data: netValues,
+          backgroundColor: barColors,
+          borderRadius: 4,
+          borderSkipped: false,
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: ctx => fmtAmt(ctx.raw) + (ctx.raw < 0 ? ' (saved)' : ' (over)')
+            }
+          }
+        },
+        scales: {
+          x: { grid: { color: '#1e293b' }, ticks: { font: { size: 10 } } },
+          y: {
+            grid: { color: '#334155' },
+            ticks: {
+              font: { size: 10 },
+              callback: v => fmtK(v)
+            }
+          }
+        }
+      }
+    });
+  })
+  .catch(err => {
+    document.getElementById('mini-spend-wrap').innerHTML =
+      '<p class="text-slate-500 text-sm p-2">Could not load spend data.</p>';
+  });
+
+/* ─── Net worth trend line chart ────────────────────────────────────── */
+fetch('/api/networth/history')
+  .then(r => r.json())
+  .then(history => {
+    if (!history.length) return;
+    new Chart(document.getElementById('chart-networth'), {
+      type: 'line',
+      data: {
+        labels: history.map(h => {
+          const [y,m] = h.month.split('-');
+          return new Date(y,m-1,1).toLocaleString('default',{month:'short',year:'2-digit'});
+        }),
+        datasets: [{
+          label: 'Net Worth',
+          data: history.map(h => h.net_worth),
+          borderColor: '#38bdf8',
+          backgroundColor: 'rgba(56,189,248,0.08)',
+          fill: true,
+          tension: 0.4,
+          pointRadius: 3,
+          pointHoverRadius: 6,
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: { label: ctx => fmtAmt(ctx.raw) }
+          }
+        },
+        scales: {
+          x: { grid: { color: '#1e293b' } },
+          y: {
+            grid: { color: '#334155' },
+            ticks: { callback: v => fmtK(v) }
+          }
+        }
+      }
+    });
+  });
+</script>
+{% endblock %}

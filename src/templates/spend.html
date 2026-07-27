@@ -1,0 +1,281 @@
+{% extends "base.html" %}
+{% block title %}Spend — Finance{% endblock %}
+
+{% block content %}
+<div class="space-y-8 fade-in">
+
+  <!-- ── Header + filter bar ── -->
+  <div class="flex flex-col sm:flex-row sm:items-end gap-4">
+    <div>
+      <h1 class="text-2xl font-bold text-slate-100">Category Spend</h1>
+      <p class="text-sm text-slate-400 mt-1">Monthly totals by category · excludes flagged transactions</p>
+    </div>
+
+    <!-- Date range filter -->
+    <div class="sm:ml-auto flex flex-wrap items-end gap-3">
+      <div class="flex flex-col gap-1">
+        <label class="text-xs text-slate-500 uppercase tracking-wider">From</label>
+        <input id="filter-start" type="month"
+               value="{{ earliest }}" min="{{ earliest }}" max="{{ latest }}"
+               class="bg-surface border border-slate-600 rounded-lg px-3 py-2 text-sm
+                      text-slate-100 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500" />
+      </div>
+      <div class="flex flex-col gap-1">
+        <label class="text-xs text-slate-500 uppercase tracking-wider">To</label>
+        <input id="filter-end" type="month"
+               value="{{ latest }}" min="{{ earliest }}" max="{{ latest }}"
+               class="bg-surface border border-slate-600 rounded-lg px-3 py-2 text-sm
+                      text-slate-100 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500" />
+      </div>
+      <button id="btn-apply"
+              class="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-sm font-medium
+                     rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500">
+        Apply
+      </button>
+      <button id="btn-reset"
+              class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm font-medium
+                     rounded-lg transition-colors focus:outline-none">
+        Reset
+      </button>
+    </div>
+  </div>
+
+  <!-- ── Summary chips ── -->
+  <div id="spend-chips" class="flex flex-wrap gap-3"></div>
+
+  <!-- ── Pivot table ── -->
+  <div class="bg-surface rounded-xl border border-slate-700">
+    <div class="px-6 py-4 border-b border-slate-700 flex items-center gap-3">
+      <h2 class="font-semibold text-slate-100">Monthly Breakdown</h2>
+      <span id="table-range-label" class="text-xs text-slate-500"></span>
+      <span class="ml-auto text-xs text-slate-500">
+        Avg column excludes the current (partial) month
+      </span>
+    </div>
+    <div class="table-scroll">
+      <div id="pivot-wrap" class="p-4">
+        <div class="spinner"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Average spend bar chart ── -->
+  <div class="bg-surface rounded-xl border border-slate-700">
+    <div class="px-6 py-4 border-b border-slate-700">
+      <h2 class="font-semibold text-slate-100">Average Monthly Spend by Category</h2>
+    </div>
+    <div class="p-6">
+      <canvas id="chart-avg-spend" height="90"></canvas>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentData = null;
+let avgChart = null;
+
+const EARLIEST = '{{ earliest }}';
+const LATEST   = '{{ latest }}';
+
+/* ─── Load and render ───────────────────────────────────────────── */
+function load() {
+  const start = document.getElementById('filter-start').value;
+  const end   = document.getElementById('filter-end').value;
+  if (!start || !end || start > end) return;
+
+  document.getElementById('pivot-wrap').innerHTML = '<div class="spinner"></div>';
+  document.getElementById('spend-chips').innerHTML = '';
+
+  fetch(`/api/spend/monthly?start=${start}&end=${end}`)
+    .then(r => r.json())
+    .then(data => {
+      currentData = data;
+      renderTable(data);
+      renderChips(data);
+      renderChart(data);
+    })
+    .catch(() => {
+      document.getElementById('pivot-wrap').innerHTML =
+        '<p class="text-slate-500 text-sm p-2">Failed to load data.</p>';
+    });
+}
+
+/* ─── Summary chips ─────────────────────────────────────────────── */
+function renderChips(data) {
+  const complete = data.complete_months;
+  const net = data.net_row;
+
+  const totalSpend = Object.values(net.monthly).filter(v => v > 0).reduce((a,b)=>a+b, 0);
+  const totalInc   = Object.values(net.monthly).filter(v => v < 0).reduce((a,b)=>a+b, 0);
+
+  const chips = [
+    { label: 'Months shown',    value: data.months.length,          color: 'text-slate-300' },
+    { label: 'Avg monthly net', value: fmtAmt(net.average),         color: net.average < 0 ? 'text-emerald-400':'text-red-400' },
+    { label: 'Categories',      value: data.rows.length,            color: 'text-slate-300' },
+    { label: 'Complete months', value: complete.length + ' (avg basis)', color: 'text-slate-400' },
+  ];
+
+  document.getElementById('spend-chips').innerHTML = chips.map(c => `
+    <div class="bg-surface border border-slate-700 rounded-lg px-4 py-2 flex flex-col">
+      <span class="text-xs text-slate-500 uppercase tracking-wider">${c.label}</span>
+      <span class="text-sm font-semibold ${c.color} mt-0.5">${c.value}</span>
+    </div>
+  `).join('');
+}
+
+/* ─── Pivot table ───────────────────────────────────────────────── */
+function renderTable(data) {
+  const { months, complete_months, rows, net_row } = data;
+  const wrap = document.getElementById('pivot-wrap');
+
+  if (!months || months.length === 0) {
+    wrap.innerHTML = '<p class="text-slate-500 text-sm p-2">No data in the selected range.</p>';
+    return;
+  }
+
+  // Range label
+  const [sy, sm] = months[0].split('-');
+  const [ey, em] = months[months.length-1].split('-');
+  const rangeStr = `${new Date(sy,sm-1,1).toLocaleString('default',{month:'short',year:'numeric'})} – ${new Date(ey,em-1,1).toLocaleString('default',{month:'short',year:'numeric'})}`;
+  document.getElementById('table-range-label').textContent = rangeStr;
+
+  function mLabel(m) {
+    const [y,mo] = m.split('-');
+    return new Date(y,mo-1,1).toLocaleString('default',{month:'short',year:'2-digit'});
+  }
+  function isComplete(m) { return complete_months.includes(m); }
+
+  const isCurrentMonth = (m) => {
+    const today = new Date();
+    const cur = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
+    return m === cur;
+  };
+
+  // Header
+  const thMonths = months.map(m => {
+    const partial = isCurrentMonth(m);
+    return `<th class="bg-surface text-right text-xs px-3 py-2.5 font-medium whitespace-nowrap border-b border-slate-700
+                   ${partial ? 'text-amber-400' : 'text-slate-400'}">
+      ${mLabel(m)}${partial ? ' *' : ''}
+    </th>`;
+  }).join('');
+
+  const thead = `<thead><tr>
+    <th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 font-medium
+               whitespace-nowrap min-w-[180px] border-b border-slate-700">Category</th>
+    ${thMonths}
+    <th class="bg-slate-900 text-right text-xs text-sky-400 px-4 py-2.5 font-semibold
+               whitespace-nowrap border-b border-slate-700 border-l border-slate-700">Avg / mo</th>
+  </tr></thead>`;
+
+  // Body rows
+  const tbody = rows.map((row, i) => {
+    const bg = i % 2 === 0 ? 'bg-base' : 'bg-surface';
+    const cells = months.map(m => {
+      const v = row.monthly[m] ?? null;
+      const partial = isCurrentMonth(m);
+      return `<td class="${bg} text-right px-3 py-2 text-xs ${partial ? 'opacity-60' : ''}">
+        ${v !== null ? amtSpan(v) : '<span class="text-slate-700">—</span>'}
+      </td>`;
+    }).join('');
+    return `<tr>
+      <td class="${bg} px-4 py-2 text-sm text-slate-200 whitespace-nowrap">${row.category}</td>
+      ${cells}
+      <td class="bg-slate-900 text-right px-4 py-2 text-xs font-semibold border-l border-slate-700">
+        ${amtSpan(row.average)}
+      </td>
+    </tr>`;
+  }).join('');
+
+  // Net footer row
+  const netCells = months.map(m => {
+    const v = net_row.monthly[m] ?? null;
+    const partial = isCurrentMonth(m);
+    return `<td class="bg-slate-950 text-right px-3 py-2.5 text-xs font-bold ${partial ? 'opacity-60' : ''}">
+      ${v !== null ? amtSpan(v) : '—'}
+    </td>`;
+  }).join('');
+
+  const tfoot = `<tfoot><tr>
+    <td class="bg-slate-950 px-4 py-2.5 text-sm font-bold text-slate-200 border-t border-slate-600">Net</td>
+    ${netCells}
+    <td class="bg-slate-950 text-right px-4 py-2.5 text-xs font-bold border-t border-slate-600 border-l border-slate-700">
+      ${amtSpan(net_row.average)}
+    </td>
+  </tr></tfoot>`;
+
+  wrap.innerHTML = `
+    <table class="pivot-table w-full text-xs border-collapse">
+      ${thead}
+      <tbody>${tbody}</tbody>
+      ${tfoot}
+    </table>
+    ${complete_months.length < months.length ? '<p class="text-xs text-amber-400/70 mt-3 px-1">* Current month is partial and excluded from averages.</p>' : ''}
+  `;
+}
+
+/* ─── Average spend bar chart ───────────────────────────────────── */
+function renderChart(data) {
+  const { rows } = data;
+  const canvas = document.getElementById('chart-avg-spend');
+
+  // Only show categories with meaningful averages
+  const visible = rows.filter(r => Math.abs(r.average) > 0.01);
+  const labels  = visible.map(r => r.category);
+  const values  = visible.map(r => r.average);
+  const colors  = values.map(v => v > 0 ? 'rgba(248,113,113,0.75)' : 'rgba(74,222,128,0.75)');
+
+  if (avgChart) avgChart.destroy();
+  avgChart = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Avg Monthly',
+        data: values,
+        backgroundColor: colors,
+        borderRadius: 4,
+        borderSkipped: false,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: { label: ctx => fmtAmt(ctx.raw) + (ctx.raw < 0 ? ' (income)' : ' (expense)') }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: '#334155' },
+          ticks: { callback: v => fmtK(v) }
+        },
+        y: {
+          grid: { color: '#1e293b' },
+          ticks: { font: { size: 11 } }
+        }
+      }
+    }
+  });
+}
+
+/* ─── Filter controls ───────────────────────────────────────────── */
+document.getElementById('btn-apply').addEventListener('click', load);
+document.getElementById('btn-reset').addEventListener('click', () => {
+  document.getElementById('filter-start').value = EARLIEST;
+  document.getElementById('filter-end').value   = LATEST;
+  load();
+});
+// Also allow pressing Enter in either field
+['filter-start','filter-end'].forEach(id =>
+  document.getElementById(id).addEventListener('change', load)
+);
+
+load();
+</script>
+{% endblock %}

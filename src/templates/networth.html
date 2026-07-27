@@ -1,0 +1,324 @@
+{% extends "base.html" %}
+{% block title %}Net Worth — Finance{% endblock %}
+
+{% block content %}
+<div class="space-y-8 fade-in">
+
+  <!-- ── Header ── -->
+  <div>
+    <h1 class="text-2xl font-bold text-slate-100">Net Worth</h1>
+    <p class="text-sm text-slate-400 mt-1">Latest account balances &amp; historical trend</p>
+  </div>
+
+  <!-- ── Top-level cards ── -->
+  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4" id="nw-cards">
+    {% for _ in range(3) %}
+    <div class="bg-surface rounded-xl p-6 border border-slate-700 animate-pulse">
+      <div class="h-3 bg-slate-700 rounded w-1/2 mb-3"></div>
+      <div class="h-9 bg-slate-700 rounded w-3/4"></div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- ── Trend chart ── -->
+  <div class="bg-surface rounded-xl border border-slate-700">
+    <div class="px-6 py-4 border-b border-slate-700">
+      <h2 class="font-semibold text-slate-100">Net Worth Over Time</h2>
+    </div>
+    <div class="p-6">
+      <canvas id="chart-nw-history" height="75"></canvas>
+    </div>
+  </div>
+
+  <!-- ── Account breakdown ── -->
+  <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+
+    <!-- Account table -->
+    <div class="bg-surface rounded-xl border border-slate-700">
+      <div class="px-6 py-4 border-b border-slate-700 flex items-center justify-between">
+        <h2 class="font-semibold text-slate-100">Accounts</h2>
+        <span id="nw-as-of" class="text-xs text-slate-500"></span>
+      </div>
+      <div class="table-scroll">
+        <div id="account-table-wrap" class="p-4">
+          <div class="spinner"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Allocation donut -->
+    <div class="bg-surface rounded-xl border border-slate-700 flex flex-col">
+      <div class="px-6 py-4 border-b border-slate-700">
+        <h2 class="font-semibold text-slate-100">Asset Allocation</h2>
+      </div>
+      <div class="p-6 flex-1 flex items-center justify-center">
+        <div class="relative w-full max-w-xs">
+          <canvas id="chart-allocation"></canvas>
+          <div id="donut-center"
+               class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+            <span class="text-xs text-slate-500">Net Worth</span>
+            <span id="donut-nw" class="text-xl font-bold text-sky-400 mt-1"></span>
+          </div>
+        </div>
+      </div>
+      <!-- Legend -->
+      <div id="alloc-legend" class="px-6 pb-6 grid grid-cols-2 gap-2"></div>
+    </div>
+
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const TYPE_COLORS = {
+  depository:  { bg: 'rgba(56,189,248,0.8)',  border: '#38bdf8',  label: 'Checking / Savings' },
+  investment:  { bg: 'rgba(167,139,250,0.8)', border: '#a78bfa',  label: 'Investment' },
+  credit:      { bg: 'rgba(248,113,113,0.8)', border: '#f87171',  label: 'Credit Cards' },
+  loan:        { bg: 'rgba(251,146,60,0.8)',  border: '#fb923c',  label: 'Loans' },
+  other:       { bg: 'rgba(100,116,139,0.8)', border: '#64748b',  label: 'Other' },
+};
+
+function typeColor(t) {
+  return TYPE_COLORS[(t||'').toLowerCase()] || TYPE_COLORS.other;
+}
+
+/* ─── Load current NW data ────────────────────────────────────── */
+Promise.all([
+  fetch('/api/networth/current').then(r => r.json()),
+  fetch('/api/networth/history').then(r => r.json()),
+]).then(([current, history]) => {
+  renderCards(current);
+  renderAccountTable(current);
+  renderAllocationChart(current);
+  renderHistoryChart(history);
+}).catch(() => {
+  document.getElementById('nw-cards').innerHTML =
+    '<p class="col-span-3 text-slate-500 text-sm">Could not load net worth data.</p>';
+});
+
+/* ─── Summary cards ──────────────────────────────────────────── */
+function renderCards(data) {
+  const cards = [
+    {
+      label: 'Net Worth',
+      value: fmtAmt(data.net_worth),
+      sub: 'assets minus liabilities',
+      color: data.net_worth >= 0 ? 'text-sky-400' : 'text-red-400',
+    },
+    {
+      label: 'Total Assets',
+      value: fmtAmt(data.total_assets),
+      sub: 'depository + investments',
+      color: 'text-emerald-400',
+    },
+    {
+      label: 'Total Liabilities',
+      value: fmtAmt(data.total_liabilities),
+      sub: 'credit + loans',
+      color: 'text-red-400',
+    },
+  ];
+
+  document.getElementById('nw-cards').innerHTML = cards.map(c => `
+    <div class="bg-surface rounded-xl p-6 border border-slate-700">
+      <p class="text-xs text-slate-500 uppercase tracking-wider mb-2">${c.label}</p>
+      <p class="text-3xl font-bold ${c.color}">${c.value}</p>
+      <p class="text-xs text-slate-500 mt-2">${c.sub}</p>
+    </div>
+  `).join('');
+}
+
+/* ─── Account table ──────────────────────────────────────────── */
+function renderAccountTable(data) {
+  const { accounts } = data;
+  const wrap = document.getElementById('account-table-wrap');
+
+  if (!accounts || accounts.length === 0) {
+    wrap.innerHTML = '<p class="text-slate-500 text-sm p-2">No account data. Run the sync pipeline first.</p>';
+    return;
+  }
+
+  // Group by type
+  const typeOrder = ['depository','investment','credit','loan'];
+  const groups = {};
+  for (const a of accounts) {
+    const t = (a.account_type||'other').toLowerCase();
+    (groups[t] = groups[t] || []).push(a);
+  }
+
+  // as-of date
+  const dates = accounts.map(a => a.snapshot_date).filter(Boolean).sort();
+  if (dates.length) {
+    document.getElementById('nw-as-of').textContent = 'As of ' + dates[dates.length-1];
+  }
+
+  let html = `
+    <table class="w-full text-sm border-collapse">
+      <thead><tr>
+        <th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 font-medium border-b border-slate-700">Account</th>
+        <th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 font-medium border-b border-slate-700">Institution</th>
+        <th class="bg-surface text-right text-xs text-slate-400 px-4 py-2.5 font-medium border-b border-slate-700">Balance</th>
+        <th class="bg-surface text-right text-xs text-slate-400 px-4 py-2.5 font-medium border-b border-slate-700">Available</th>
+      </tr></thead>
+      <tbody>`;
+
+  const allTypes = [...new Set([...typeOrder, ...Object.keys(groups)])];
+  for (const type of allTypes) {
+    if (!groups[type]) continue;
+    const c = typeColor(type);
+    html += `<tr>
+      <td colspan="4" class="bg-slate-900 px-4 py-1.5 text-xs font-semibold uppercase tracking-wider"
+          style="color:${c.border}">${c.label}</td>
+    </tr>`;
+
+    for (const a of groups[type]) {
+      const isLiability = ['credit','loan'].includes(type);
+      const bal = a.current_balance ?? 0;
+      const avail = a.available_balance ?? null;
+      const limit = a.credit_limit ?? null;
+      const balDisplay = isLiability
+        ? `<span class="text-red-400">${fmtAmt(bal)}</span>`
+        : `<span class="text-slate-100">${fmtAmt(bal)}</span>`;
+      const availDisplay = avail !== null
+        ? fmtAmt(avail) + (limit ? ` <span class="text-slate-600">/ ${fmtAmt(limit)}</span>` : '')
+        : '<span class="text-slate-600">—</span>';
+
+      html += `<tr class="hover:bg-slate-800 transition-colors">
+        <td class="px-4 py-2 text-slate-200">${a.account_name || a.account_id}</td>
+        <td class="px-4 py-2 text-slate-400 text-xs">${a.institution || '—'}</td>
+        <td class="px-4 py-2 text-right font-mono">${balDisplay}</td>
+        <td class="px-4 py-2 text-right font-mono text-xs text-slate-400">${availDisplay}</td>
+      </tr>`;
+    }
+
+    // Sub-total for this type
+    const subtotal = groups[type].reduce((s, a) => s + (a.current_balance || 0), 0);
+    html += `<tr class="border-t border-slate-800">
+      <td class="px-4 py-1.5 text-xs text-slate-500" colspan="2">Subtotal</td>
+      <td class="px-4 py-1.5 text-right text-xs font-semibold ${isLiabilityType(type)?'text-red-400':'text-emerald-400'}">${fmtAmt(subtotal)}</td>
+      <td></td>
+    </tr>`;
+  }
+
+  html += `</tbody></table>`;
+  wrap.innerHTML = html;
+}
+
+function isLiabilityType(t) { return ['credit','loan'].includes(t); }
+
+/* ─── Allocation donut chart ─────────────────────────────────── */
+function renderAllocationChart(data) {
+  const { accounts, net_worth } = data;
+  const typeOrder = ['depository','investment','credit','loan'];
+
+  // Sum by type
+  const sums = {};
+  for (const a of accounts) {
+    const t = (a.account_type||'other').toLowerCase();
+    sums[t] = (sums[t] || 0) + (a.current_balance || 0);
+  }
+
+  const types = [...new Set([...typeOrder, ...Object.keys(sums)])].filter(t => sums[t]);
+  const values = types.map(t => Math.abs(sums[t]));
+  const colors = types.map(t => typeColor(t).bg);
+  const borders = types.map(t => typeColor(t).border);
+  const labels = types.map(t => typeColor(t).label);
+
+  document.getElementById('donut-nw').textContent = fmtK(net_worth);
+
+  new Chart(document.getElementById('chart-allocation'), {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: colors,
+        borderColor: borders,
+        borderWidth: 1.5,
+        hoverOffset: 6,
+      }]
+    },
+    options: {
+      cutout: '62%',
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.label}: ${fmtAmt(ctx.raw)}`
+          }
+        }
+      }
+    }
+  });
+
+  // Custom legend
+  document.getElementById('alloc-legend').innerHTML = types.map((t, i) => {
+    const liability = isLiabilityType(t);
+    return `<div class="flex items-center gap-2 text-xs text-slate-400">
+      <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background:${borders[i]}"></span>
+      <span class="truncate">${labels[i]}</span>
+      <span class="ml-auto font-mono ${liability?'text-red-400':'text-emerald-400'} flex-shrink-0">
+        ${fmtK(sums[t])}
+      </span>
+    </div>`;
+  }).join('');
+}
+
+/* ─── Net worth history line chart ───────────────────────────── */
+function renderHistoryChart(history) {
+  if (!history.length) return;
+
+  const values = history.map(h => h.net_worth);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const gradient = (ctx) => {
+    const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, ctx.chart.height);
+    g.addColorStop(0, 'rgba(56,189,248,0.25)');
+    g.addColorStop(1, 'rgba(56,189,248,0)');
+    return g;
+  };
+
+  new Chart(document.getElementById('chart-nw-history'), {
+    type: 'line',
+    data: {
+      labels: history.map(h => {
+        const [y, m] = h.month.split('-');
+        return new Date(y, m-1, 1).toLocaleString('default', {month:'short',year:'2-digit'});
+      }),
+      datasets: [{
+        label: 'Net Worth',
+        data: values,
+        borderColor: '#38bdf8',
+        backgroundColor: gradient,
+        fill: true,
+        tension: 0.4,
+        pointRadius: 3,
+        pointBackgroundColor: '#38bdf8',
+        pointHoverRadius: 7,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: { label: ctx => fmtAmt(ctx.raw) }
+        }
+      },
+      scales: {
+        x: { grid: { color: '#1e293b' } },
+        y: {
+          grid: { color: '#334155' },
+          ticks: { callback: v => fmtK(v) },
+          suggestedMin: min * 0.95,
+          suggestedMax: max * 1.05,
+        }
+      }
+    }
+  });
+}
+</script>
+{% endblock %}

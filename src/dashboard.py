@@ -1,7 +1,11 @@
 """
 dashboard.py
 ============
-Local / Replit web dashboard for Finance Sync data.
+Entry point: run the sync pipeline then serve the web dashboard.
+
+On startup this module runs the full finance sync pipeline (transactions,
+balances, CSV exports) with Google Sheets disabled, then starts the Flask
+web server so you immediately see up-to-date data.
 
 Serves four pages:
   /            — Main dashboard (summary cards, mini spend table, charts)
@@ -9,12 +13,12 @@ Serves four pages:
   /projections — Projected annual spend / income
   /networth    — Account balances and net worth trend
 
-All data is read directly from the SQLite database; the sync pipeline must
-have run at least once to populate it.
-
 Usage:
-    python -m src.dashboard          # http://localhost:5001
+    python -m src.dashboard                   # syncs then opens http://localhost:5000
     DASHBOARD_PORT=8080 python -m src.dashboard
+
+To push to Google Sheets instead of opening the dashboard:
+    python -m src.google_sheets
 """
 
 import json
@@ -500,5 +504,31 @@ def _print_startup():
 
 
 if __name__ == "__main__":
+    # ── Run the sync pipeline first ───────────────────────────────────────────
+    # Import here (not at module top) to avoid circular imports with config.
+    from .main import run_pipeline  # noqa: PLC0415
+
+    print("\n" + "=" * 60)
+    print("  Finance Sync — Syncing data before dashboard start…")
+    print("=" * 60 + "\n")
+
+    try:
+        run_pipeline(enable_sheets=False)
+    except SystemExit as exc:
+        # run_pipeline calls sys.exit(1) on fatal pipeline errors.
+        # We still want to start the dashboard so the user can see whatever
+        # data is already in the DB, but we surface the failure clearly.
+        if exc.code != 0:
+            print(
+                "\n  ⚠️  Pipeline exited with an error — starting dashboard "
+                "with existing database data.\n"
+            )
+    except Exception:
+        logger.exception(
+            "Pipeline raised an unexpected error — starting dashboard "
+            "with existing database data."
+        )
+
+    # ── Start the web server ──────────────────────────────────────────────────
     _print_startup()
     app.run(host="0.0.0.0", port=DASHBOARD_PORT, debug=False)

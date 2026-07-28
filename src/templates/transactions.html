@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Transactions — Finance{% endblock %}
+
+{% block content %}
+<div class="space-y-8 fade-in">
+
+  <!-- ── Header ── -->
+  <div class="flex flex-col sm:flex-row sm:items-end gap-4">
+    <div>
+      <h1 class="text-2xl font-bold text-slate-100">Transactions</h1>
+      <p class="text-sm text-slate-400 mt-1">View all transactions in Excel-like format</p>
+    </div>
+
+    <!-- Date filter -->
+    <div class="sm:ml-auto flex items-end gap-3">
+      <div class="flex flex-col gap-1">
+        <label class="text-xs text-slate-500 uppercase tracking-wider">From</label>
+        <input type="date" id="start-date" class="bg-surface border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+      </div>
+      <div class="flex flex-col gap-1">
+        <label class="text-xs text-slate-500 uppercase tracking-wider">To</label>
+        <input type="date" id="end-date" class="bg-surface border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+      </div>
+      <div class="flex flex-col gap-1">
+        <label class="text-xs text-slate-500 uppercase tracking-wider">&nbsp;</label>
+        <button id="filter-btn" class="bg-sky-500 hover:bg-sky-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          Filter
+        </button>
+      </div>
+      <div class="flex flex-col gap-1">
+        <label class="text-xs text-slate-500 uppercase tracking-wider">&nbsp;</label>
+        <button id="clear-btn" class="bg-slate-600 hover:bg-slate-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          Clear
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Transactions table ── -->
+  <div class="bg-surface rounded-xl border border-slate-700">
+    <div class="table-scroll">
+      <div id="table-wrap" class="p-4">
+        <div class="spinner"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let allTransactions = [];
+
+// Load transactions on page load
+loadTransactions();
+
+document.getElementById('filter-btn').addEventListener('click', applyFilter);
+document.getElementById('clear-btn').addEventListener('click', clearFilter);
+
+function loadTransactions(startDate = null, endDate = null) {
+  document.getElementById('table-wrap').innerHTML = '<div class="spinner"></div>';
+  
+  let url = '/api/transactions';
+  const params = new URLSearchParams();
+  if (startDate) params.append('start_date', startDate);
+  if (endDate) params.append('end_date', endDate);
+  if (params.toString()) url += '?' + params.toString();
+  
+  fetch(url)
+    .then(r => r.json())
+    .then(data => {
+      allTransactions = data;
+      renderTable(data);
+    })
+    .catch(() => {
+      document.getElementById('table-wrap').innerHTML = '<p class="text-slate-500 text-sm p-2">Failed to load transactions.</p>';
+    });
+}
+
+function renderTable(transactions) {
+  const wrap = document.getElementById('table-wrap');
+  if (!transactions || transactions.length === 0) {
+    wrap.innerHTML = '<p class="text-slate-500 text-sm p-2">No transactions found.</p>';
+    return;
+  }
+
+  const thead = `<thead><tr>
+    <th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 font-medium whitespace-nowrap border-b border-slate-700">Date</th>
+    <th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 font-medium whitespace-nowrap border-b border-slate-700">Account</th>
+    <th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 font-medium whitespace-nowrap border-b border-slate-700">Description</th>
+    <th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 font-medium whitespace-nowrap border-b border-slate-700">Category</th>
+    <th class="bg-surface text-right text-xs text-slate-400 px-4 py-2.5 font-medium whitespace-nowrap border-b border-slate-700">Amount</th>
+  </tr></thead>`;
+
+  const rows = transactions.map((t, i) => {
+    const bg = i % 2 === 0 ? 'bg-base' : 'bg-surface';
+    return `<tr>
+      <td class="${bg} px-4 py-2 text-sm text-slate-200 whitespace-nowrap">${t.Date}</td>
+      <td class="${bg} px-4 py-2 text-sm text-slate-300">${t.Account || '-'}</td>
+      <td class="${bg} px-4 py-2 text-sm text-slate-300">${t.Description || '-'}</td>
+      <td class="${bg} px-4 py-2 text-sm text-slate-300">${t.Category || '-'}</td>
+      <td class="${bg} text-right px-4 py-2 text-sm font-medium whitespace-nowrap">${amtSpan(t.Amount)}</td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <table class="w-full text-xs border-collapse">
+      ${thead}
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function applyFilter() {
+  const startDate = document.getElementById('start-date').value;
+  const endDate = document.getElementById('end-date').value;
+  loadTransactions(startDate || null, endDate || null);
+}
+
+function clearFilter() {
+  document.getElementById('start-date').value = '';
+  document.getElementById('end-date').value = '';
+  loadTransactions();
+}
+</script>
+{% endblock %}

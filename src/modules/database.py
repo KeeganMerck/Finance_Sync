@@ -156,6 +156,14 @@ _CREATE_MANUAL_SNAPSHOT_ACCOUNT_INDEX = """
     ON manual_account_snapshots(account_id);
 """
 
+_CREATE_NET_WORTH_HISTORY_TABLE = """
+    CREATE TABLE IF NOT EXISTS net_worth_history (
+        snapshot_date TEXT PRIMARY KEY,
+        net_worth REAL NOT NULL,
+        last_updated TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+"""
+
 
 # ─── Connection Management ─────────────────────────────────────────────────────
 
@@ -248,6 +256,9 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         # Initialize manual account snapshots table
         init_manual_account_snapshots(db_path)
 
+        # Initialize net worth history table
+        init_net_worth_history(db_path)
+
     logger.info("Database schema initialized successfully.")
 
 
@@ -292,6 +303,125 @@ def init_manual_account_snapshots(db_path: Path = DATABASE_PATH) -> None:
         conn.execute(_CREATE_MANUAL_SNAPSHOT_ACCOUNT_INDEX)
 
     logger.debug("Manual account snapshots table initialized successfully.")
+
+
+def init_net_worth_history(db_path: Path = DATABASE_PATH) -> None:
+    """
+    Create the net_worth_history table if it doesn't already exist.
+
+    Safe to call on every startup — all DDL uses IF NOT EXISTS. No data
+    is altered when called against an existing populated database.
+
+    Args:
+        db_path: Path to the SQLite database file.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping net worth history init.")
+        return
+
+    with _get_connection(db_path) as conn:
+        conn.execute(_CREATE_NET_WORTH_HISTORY_TABLE)
+
+    logger.debug("Net worth history table initialized successfully.")
+
+
+def recalculate_net_worth_history(from_date: str = None, db_path: Path = DATABASE_PATH) -> None:
+    """
+    Recalculate net worth history for all dates (or from a specific date forward).
+    
+    This is called when manual snapshots are added/updated to ensure net worth
+    calculations reflect the new balances for all subsequent dates.
+    
+    Args:
+        from_date: Optional date string in YYYY-MM-DD format to start recalculating from.
+                   If None, recalculates all history.
+        db_path: Path to the database.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping net worth history recalculation.")
+        return
+
+    with _get_connection(db_path) as conn:
+        # Delete existing history that will be recalculated
+        if from_date:
+            conn.execute("DELETE FROM net_worth_history WHERE snapshot_date >= ?", (from_date,))
+        else:
+            conn.execute("DELETE FROM net_worth_history")
+        
+        # Calculate net worth for each date
+        if from_date:
+            conn.execute(
+                """
+                WITH combined_balances AS (
+                    SELECT 
+                        snapshot_date,
+                        account_type,
+                        current_balance
+                    FROM account_snapshots
+                    WHERE snapshot_date >= ?
+                    
+                    UNION ALL
+                    
+                    SELECT 
+                        snapshot_date,
+                        account_type,
+                        current_balance
+                    FROM manual_account_snapshots
+                    WHERE snapshot_date >= ?
+                )
+                INSERT INTO net_worth_history (snapshot_date, net_worth)
+                SELECT
+                    snapshot_date,
+                    SUM(CASE
+                        WHEN account_type IN ('depository', 'investment')
+                        THEN COALESCE(current_balance, 0)
+                        WHEN account_type IN ('credit', 'loan')
+                        THEN -COALESCE(current_balance, 0)
+                        ELSE 0
+                    END) as net_worth
+                FROM combined_balances
+                GROUP BY snapshot_date
+                ON CONFLICT(snapshot_date) DO UPDATE SET net_worth = excluded.net_worth
+                """,
+                (from_date, from_date),
+            )
+        else:
+            conn.execute(
+                """
+                WITH combined_balances AS (
+                    SELECT 
+                        snapshot_date,
+                        account_type,
+                        current_balance
+                    FROM account_snapshots
+                    
+                    UNION ALL
+                    
+                    SELECT 
+                        snapshot_date,
+                        account_type,
+                        current_balance
+                    FROM manual_account_snapshots
+                )
+                INSERT INTO net_worth_history (snapshot_date, net_worth)
+                SELECT
+                    snapshot_date,
+                    SUM(CASE
+                        WHEN account_type IN ('depository', 'investment')
+                        THEN COALESCE(current_balance, 0)
+                        WHEN account_type IN ('credit', 'loan')
+                        THEN -COALESCE(current_balance, 0)
+                        ELSE 0
+                    END) as net_worth
+                FROM combined_balances
+                GROUP BY snapshot_date
+                ON CONFLICT(snapshot_date) DO UPDATE SET net_worth = excluded.net_worth
+                """
+            )
+        
+        conn.commit()
+
+    logger.debug(f"Net worth history recalculated from {from_date or 'beginning'}.")
 
 
 # ─── Write Operations ──────────────────────────────────────────────────────────
@@ -803,18 +933,16 @@ def get_balance_history(days: int = 90, db_path: Path = DATABASE_PATH) -> list[d
 
 def get_net_worth_history(db_path: Path = DATABASE_PATH) -> list[dict]:
     """
-    Return net worth history aggregated by snapshot date.
+    Return net worth history from the net_worth_history table.
 
-    Aggregates by snapshot_date:
-      - assets      = SUM of depository + investment balances
-      - liabilities = SUM of credit + loan balances (as positive)
-      - net_worth   = assets - liabilities
+    If the table is empty or doesn't exist, this will calculate net worth on the fly
+    and populate the table for future use.
 
     Args:
         db_path: Path to the database.
 
     Returns:
-        List of dicts with keys: snapshot_date, assets, liabilities, net_worth.
+        List of dicts with keys: snapshot_date, net_worth.
         Ordered by snapshot_date ASC. Returns empty list if database is disabled
         or no snapshots exist.
     """
@@ -823,36 +951,72 @@ def get_net_worth_history(db_path: Path = DATABASE_PATH) -> list[dict]:
         return []
 
     with _get_connection(db_path) as conn:
+        # Try to get from the cached table first
         cursor = conn.execute(
             """
-            SELECT
-                snapshot_date,
-                SUM(CASE
-                    WHEN account_type IN ('depository', 'investment')
-                    THEN COALESCE(current_balance, 0)
-                    ELSE 0
-                END) as assets,
-                SUM(CASE
-                    WHEN account_type IN ('credit', 'loan')
-                    THEN COALESCE(current_balance, 0)
-                    ELSE 0
-                END) as liabilities
-            FROM account_snapshots
-            GROUP BY snapshot_date
+            SELECT snapshot_date, net_worth 
+            FROM net_worth_history 
             ORDER BY snapshot_date ASC
             """
         )
         rows = cursor.fetchall()
 
+        # If table is empty, calculate on the fly and populate it
+        if not rows:
+            logger.debug("Net worth history table empty, calculating from snapshots...")
+            
+            cursor = conn.execute(
+                """
+                WITH combined_balances AS (
+                    SELECT 
+                        snapshot_date,
+                        account_type,
+                        current_balance
+                    FROM account_snapshots
+                    
+                    UNION ALL
+                    
+                    SELECT 
+                        snapshot_date,
+                        account_type,
+                        current_balance
+                    FROM manual_account_snapshots
+                )
+                SELECT
+                    snapshot_date,
+                    SUM(CASE
+                        WHEN account_type IN ('depository', 'investment')
+                        THEN COALESCE(current_balance, 0)
+                        WHEN account_type IN ('credit', 'loan')
+                        THEN -COALESCE(current_balance, 0)
+                        ELSE 0
+                    END) as net_worth
+                FROM combined_balances
+                GROUP BY snapshot_date
+                ORDER BY snapshot_date ASC
+                """
+            )
+            calc_rows = cursor.fetchall()
+
+            # Populate the table
+            for row in calc_rows:
+                conn.execute(
+                    """
+                    INSERT INTO net_worth_history (snapshot_date, net_worth)
+                    VALUES (?, ?)
+                    ON CONFLICT(snapshot_date) DO UPDATE SET net_worth = excluded.net_worth
+                    """,
+                    (row['snapshot_date'], row['net_worth'])
+                )
+            
+            conn.commit()
+            rows = calc_rows
+
     result = []
     for row in rows:
-        assets = row['assets'] or 0
-        liabilities = row['liabilities'] or 0
         result.append({
             'snapshot_date': row['snapshot_date'],
-            'assets': assets,
-            'liabilities': liabilities,
-            'net_worth': assets - liabilities,
+            'net_worth': row['net_worth'] or 0,
         })
 
     logger.debug(f"Retrieved net worth history for {len(result)} date(s).")

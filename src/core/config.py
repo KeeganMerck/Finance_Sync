@@ -89,7 +89,8 @@ SYNC_MODE: str = os.getenv('SYNC_MODE', 'full').strip().lower()
 
 # Rolling window for institutions that already have data in the DB.
 # 14 days catches pending→posted transitions and any recent corrections.
-ROLLING_SYNC_DAYS: int = int(os.getenv('ROLLING_SYNC_DAYS', '14'))
+# CHANGE BACK TO 14 ONCE GOOGLE SHEETS FUNCTIONS ARE BETTER
+ROLLING_SYNC_DAYS: int = int(os.getenv('ROLLING_SYNC_DAYS', '730'))
 
 # How far back to fetch for a brand-new institution (no DB records for it yet).
 # Plaid supports up to 730 days (2 years) of history on most institutions.

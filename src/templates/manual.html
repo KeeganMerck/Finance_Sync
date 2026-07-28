@@ -1,0 +1,305 @@
+{% extends "base.html" %}
+{% block title %}Manual Snapshots — Finance{% endblock %}
+
+{% block content %}
+<div class="space-y-8 fade-in">
+
+  <!-- ── Header ── -->
+  <div class="flex flex-col sm:flex-row sm:items-end gap-4">
+    <div>
+      <h1 class="text-2xl font-bold text-slate-100">Manual Account Snapshots</h1>
+      <p class="text-sm text-slate-400 mt-1">Add or edit manual account balance entries</p>
+    </div>
+    <div class="ml-auto">
+      <button id="add-btn" class="bg-sky-500 hover:bg-sky-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+        + Add Snapshot
+      </button>
+    </div>
+  </div>
+
+  <!-- ── Instructions ── -->
+  <div class="bg-surface rounded-xl border border-slate-700 p-4">
+    <p class="text-sm text-slate-400">
+      <strong class="text-slate-300">Note:</strong> Adding a historical snapshot will update net worth calculations for that date and all subsequent dates. 
+      For example, adding a $20,000 account snapshot from 3 days ago will increase net worth by $20,000 from that date forward.
+    </p>
+  </div>
+
+  <!-- ── Editable table ── -->
+  <div class="bg-surface rounded-xl border border-slate-700">
+    <div class="table-scroll">
+      <div id="table-wrap" class="p-4">
+        <div class="spinner"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Edit modal ── -->
+<div id="edit-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+  <div class="bg-surface rounded-xl border border-slate-700 p-6 w-full max-w-lg mx-4">
+    <h2 class="text-lg font-bold text-slate-100 mb-4" id="modal-title">Add Snapshot</h2>
+    <form id="edit-form" class="space-y-4">
+      <input type="hidden" id="edit-original-date">
+      <input type="hidden" id="edit-original-account-id">
+      
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Date</label>
+          <input type="date" id="edit-date" required class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Account ID</label>
+          <input type="text" id="edit-account-id" required class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="e.g., manual_savings_001">
+        </div>
+      </div>
+      
+      <div>
+        <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Account Name</label>
+        <input type="text" id="edit-account-name" required class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="e.g., Savings Account">
+      </div>
+      
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Institution</label>
+          <input type="text" id="edit-institution" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="e.g., Chase Bank">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Account Type</label>
+          <select id="edit-account-type" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+            <option value="depository">Depository</option>
+            <option value="investment">Investment</option>
+            <option value="credit">Credit</option>
+            <option value="loan">Loan</option>
+            <option value="brokerage">Brokerage</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+      </div>
+      
+      <div>
+        <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Account Subtype</label>
+        <input type="text" id="edit-account-subtype" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="e.g., savings, checking">
+      </div>
+      
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Current Balance</label>
+          <input type="number" step="0.01" id="edit-current-balance" required class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="0.00">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Available Balance</label>
+          <input type="number" step="0.01" id="edit-available-balance" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="0.00">
+        </div>
+      </div>
+      
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Credit Limit</label>
+          <input type="number" step="0.01" id="edit-credit-limit" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="0.00">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Currency</label>
+          <input type="text" id="edit-currency" value="USD" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+        </div>
+      </div>
+      
+      <div class="flex gap-3 justify-end pt-4">
+        <button type="button" id="cancel-btn" class="px-4 py-2 rounded-lg text-sm font-medium text-slate-300 hover:text-slate-100 transition-colors">
+          Cancel
+        </button>
+        <button type="submit" class="bg-sky-500 hover:bg-sky-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          Save
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let snapshots = [];
+
+// Load snapshots on page load
+loadSnapshots();
+
+document.getElementById('add-btn').addEventListener('click', () => openModal());
+document.getElementById('cancel-btn').addEventListener('click', closeModal);
+document.getElementById('edit-form').addEventListener('submit', handleSubmit);
+
+function loadSnapshots() {
+  document.getElementById('table-wrap').innerHTML = '<div class="spinner"></div>';
+  
+  fetch('/api/manual/snapshots')
+    .then(r => r.json())
+    .then(data => {
+      snapshots = data;
+      renderTable();
+    })
+    .catch(() => {
+      document.getElementById('table-wrap').innerHTML = '<p class="text-slate-500 text-sm p-2">Failed to load snapshots.</p>';
+    });
+}
+
+function renderTable() {
+  const wrap = document.getElementById('table-wrap');
+  if (!snapshots || snapshots.length === 0) {
+    wrap.innerHTML = '<p class="text-slate-500 text-sm p-2">No manual snapshots yet. Click "+ Add Snapshot" to create one.</p>';
+    return;
+  }
+
+  const thead = `<thead><tr>
+    <th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 font-medium whitespace-nowrap border-b border-slate-700">Date</th>
+    <th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 font-medium whitespace-nowrap border-b border-slate-700">Account ID</th>
+    <th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 font-medium whitespace-nowrap border-b border-slate-700">Name</th>
+    <th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 font-medium whitespace-nowrap border-b border-slate-700">Institution</th>
+    <th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 font-medium whitespace-nowrap border-b border-slate-700">Type</th>
+    <th class="bg-surface text-right text-xs text-slate-400 px-4 py-2.5 font-medium whitespace-nowrap border-b border-slate-700">Balance</th>
+    <th class="bg-surface text-center text-xs text-slate-400 px-4 py-2.5 font-medium whitespace-nowrap border-b border-slate-700">Actions</th>
+  </tr></thead>`;
+
+  const rows = snapshots.map((s, i) => {
+    const bg = i % 2 === 0 ? 'bg-base' : 'bg-surface';
+    return `<tr>
+      <td class="${bg} px-4 py-2 text-sm text-slate-200">${s.snapshot_date}</td>
+      <td class="${bg} px-4 py-2 text-xs text-slate-400 font-mono">${s.account_id}</td>
+      <td class="${bg} px-4 py-2 text-sm text-slate-200">${s.account_name || '-'}</td>
+      <td class="${bg} px-4 py-2 text-sm text-slate-300">${s.institution || '-'}</td>
+      <td class="${bg} px-4 py-2 text-xs text-slate-400">${s.account_type || '-'}</td>
+      <td class="${bg} text-right px-4 py-2 text-sm font-medium">${fmtAmt(s.current_balance || 0)}</td>
+      <td class="${bg} text-center px-4 py-2">
+        <button onclick="editSnapshot('${s.snapshot_date}', '${s.account_id}')" class="text-sky-400 hover:text-sky-300 text-xs mr-2">Edit</button>
+        <button onclick="deleteSnapshot('${s.snapshot_date}', '${s.account_id}')" class="text-red-400 hover:text-red-300 text-xs">Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <table class="w-full text-xs border-collapse">
+      ${thead}
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function openModal(snapshot = null) {
+  const modal = document.getElementById('edit-modal');
+  const title = document.getElementById('modal-title');
+  const form = document.getElementById('edit-form');
+  
+  if (snapshot) {
+    title.textContent = 'Edit Snapshot';
+    document.getElementById('edit-original-date').value = snapshot.snapshot_date;
+    document.getElementById('edit-original-account-id').value = snapshot.account_id;
+    document.getElementById('edit-date').value = snapshot.snapshot_date;
+    document.getElementById('edit-account-id').value = snapshot.account_id;
+    document.getElementById('edit-account-name').value = snapshot.account_name || '';
+    document.getElementById('edit-institution').value = snapshot.institution || '';
+    document.getElementById('edit-account-type').value = snapshot.account_type || 'depository';
+    document.getElementById('edit-account-subtype').value = snapshot.account_subtype || '';
+    document.getElementById('edit-current-balance').value = snapshot.current_balance || 0;
+    document.getElementById('edit-available-balance').value = snapshot.available_balance || 0;
+    document.getElementById('edit-credit-limit').value = snapshot.credit_limit || 0;
+    document.getElementById('edit-currency').value = snapshot.currency || 'USD';
+  } else {
+    title.textContent = 'Add Snapshot';
+    form.reset();
+    document.getElementById('edit-original-date').value = '';
+    document.getElementById('edit-original-account-id').value = '';
+    document.getElementById('edit-date').value = new Date().toISOString().split('T')[0];
+    document.getElementById('edit-currency').value = 'USD';
+  }
+  
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+}
+
+function closeModal() {
+  const modal = document.getElementById('edit-modal');
+  modal.classList.add('hidden');
+  modal.classList.remove('flex');
+}
+
+function handleSubmit(e) {
+  e.preventDefault();
+  
+  const originalDate = document.getElementById('edit-original-date').value;
+  const originalAccountId = document.getElementById('edit-original-account-id').value;
+  
+  const snapshot = {
+    snapshot_date: document.getElementById('edit-date').value,
+    account_id: document.getElementById('edit-account-id').value,
+    account_name: document.getElementById('edit-account-name').value,
+    institution: document.getElementById('edit-institution').value,
+    account_type: document.getElementById('edit-account-type').value,
+    account_subtype: document.getElementById('edit-account-subtype').value,
+    current_balance: parseFloat(document.getElementById('edit-current-balance').value) || 0,
+    available_balance: parseFloat(document.getElementById('edit-available-balance').value) || 0,
+    credit_limit: parseFloat(document.getElementById('edit-credit-limit').value) || 0,
+    currency: document.getElementById('edit-currency').value,
+  };
+  
+  // If editing, delete the old entry first (since we might be changing the primary key)
+  if (originalDate && originalAccountId) {
+    fetch(`/api/manual/snapshot?snapshot_date=${originalDate}&account_id=${originalAccountId}`, {
+      method: 'DELETE'
+    }).then(() => {
+      // Add the new/updated entry
+      saveSnapshot(snapshot);
+    });
+  } else {
+    saveSnapshot(snapshot);
+  }
+}
+
+function saveSnapshot(snapshot) {
+  fetch('/api/manual/snapshot', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(snapshot)
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      closeModal();
+      loadSnapshots();
+    } else {
+      alert('Failed to save snapshot: ' + (data.error || 'Unknown error'));
+    }
+  })
+  .catch(err => {
+    alert('Failed to save snapshot: ' + err.message);
+  });
+}
+
+function editSnapshot(snapshotDate, accountId) {
+  const snapshot = snapshots.find(s => s.snapshot_date === snapshotDate && s.account_id === accountId);
+  if (snapshot) {
+    openModal(snapshot);
+  }
+}
+
+function deleteSnapshot(snapshotDate, accountId) {
+  if (!confirm(`Are you sure you want to delete the snapshot for ${snapshotDate}?`)) {
+    return;
+  }
+  
+  fetch(`/api/manual/snapshot?snapshot_date=${snapshotDate}&account_id=${accountId}`, {
+    method: 'DELETE'
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      loadSnapshots();
+    } else {
+      alert('Failed to delete snapshot: ' + (data.error || 'Unknown error'));
+    }
+  })
+  .catch(err => {
+    alert('Failed to delete snapshot: ' + err.message);
+  });
+}
+</script>
+{% endblock %}

@@ -90,22 +90,22 @@ fetch('/api/summary')
       },
       {
         label: 'Income This Month',
-        value: fmtAmt(Math.abs(d.income_this_month)),
+        value: fmtAmt(d.income_this_month),
         sub: 'money in',
         color: 'text-emerald-400',
         icon: '↓'
       },
       {
         label: 'Net This Month',
-        value: fmtAmt(Math.abs(d.net_this_month)),
-        sub: d.net_this_month < 0 ? 'saved' : 'over budget',
-        color: d.net_this_month < 0 ? 'text-emerald-400' : 'text-red-400',
-        icon: d.net_this_month < 0 ? '✓' : '!'
+        value: fmtAmt(d.net_this_month),
+        sub: d.net_this_month >= 0 ? 'saved' : 'over budget',
+        color: d.net_this_month >= 0 ? 'text-emerald-400' : 'text-red-400',
+        icon: d.net_this_month >= 0 ? '✓' : '!'
       },
       {
         label: 'Net Worth',
         value: fmtK(d.net_worth),
-        sub: `avg net ${fmtAmt(Math.abs(d.avg_monthly_net))}/mo`,
+        sub: `avg net ${fmtAmt(d.avg_monthly_net)}/mo`,
         color: d.net_worth >= 0 ? 'text-sky-400' : 'text-red-400',
         icon: '◈'
       },
@@ -186,7 +186,7 @@ fetch('/api/spend/monthly')
     /* ── Monthly net bar chart ──────────────────────────────────────── */
     const allMonths = data.months.slice(-12);
     const netValues = allMonths.map(m => (data.net_row.monthly[m] ?? 0));
-    const barColors = netValues.map(v => v < 0 ? '#4ade80' : '#f87171');
+    const barColors = netValues.map(v => v >= 0 ? '#4ade80' : '#f87171');
 
     new Chart(document.getElementById('chart-monthly-net'), {
       type: 'bar',
@@ -205,7 +205,7 @@ fetch('/api/spend/monthly')
           legend: { display: false },
           tooltip: {
             callbacks: {
-              label: ctx => fmtAmt(ctx.raw) + (ctx.raw < 0 ? ' (saved)' : ' (over)')
+              label: ctx => fmtAmt(ctx.raw) + (ctx.raw >= 0 ? ' (saved)' : ' (over)')
             }
           }
         },

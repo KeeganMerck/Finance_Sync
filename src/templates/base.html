@@ -70,9 +70,11 @@
       <div class="flex gap-1 text-sm">
         {% set nav = [
           ('/', 'Dashboard'),
+          ('/transactions', 'Transactions'),
           ('/spend', 'Spend'),
           ('/projections', 'Projections'),
           ('/networth', 'Net Worth'),
+          ('/manual', 'Manual'),
         ] %}
         {% for href, label in nav %}
           <a href="{{ href }}"
@@ -111,8 +113,8 @@
     /* amount → coloured span */
     function amtSpan(v, { invert = false } = {}) {
       const display = fmtAmt(v);
-      const isNeg = invert ? v > 0 : v < 0;
-      const cls = isNeg ? 'text-emerald-400' : (v === 0 ? 'text-slate-400' : 'text-red-400');
+      const isNeg = v < 0;
+      const cls = isNeg ? 'text-red-400' : (v === 0 ? 'text-slate-400' : 'text-emerald-400');
       return `<span class="${cls}">${display}</span>`;
     }
 

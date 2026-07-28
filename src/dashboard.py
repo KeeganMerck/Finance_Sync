@@ -7,11 +7,13 @@ On startup this module runs the full finance sync pipeline (transactions,
 balances, CSV exports) with Google Sheets disabled, then starts the Flask
 web server so you immediately see up-to-date data.
 
-Serves four pages:
+Serves six pages:
   /            — Main dashboard (summary cards, mini spend table, charts)
+  /transactions — Excel-like transactions view with filtering
   /spend       — Full monthly category spend table with date-range filter
   /projections — Projected annual spend / income
   /networth    — Account balances and net worth trend
+  /manual      — Manual account snapshots editing
 
 Usage:
     python -m src.dashboard                   # syncs then opens http://localhost:5000
@@ -60,17 +62,21 @@ def _db_exists() -> bool:
 
 
 @contextmanager
-def _db():
+def _db(write=False):
     """
     Yield a dict-row SQLite connection (read-only URI when DB exists).
     Raises RuntimeError if the database file does not exist yet.
+    
+    Args:
+        write: If True, opens in read-write mode instead of read-only.
     """
     if not _db_exists():
         raise RuntimeError(
             f"Database not found at {DATABASE_PATH}. "
             "Run the sync pipeline (python -m src.main) first."
         )
-    conn = sqlite3.connect(f"file:{DATABASE_PATH}?mode=ro", uri=True)
+    mode = "rw" if write else "ro"
+    conn = sqlite3.connect(f"file:{DATABASE_PATH}?mode={mode}", uri=True)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -78,10 +84,10 @@ def _db():
         conn.close()
 
 
-def _rows(query: str, params: tuple = ()) -> list[dict]:
+def _rows(query: str, params: tuple = (), write: bool = False) -> list[dict]:
     """Run a SELECT and return list of plain dicts. Returns [] if DB missing."""
     try:
-        with _db() as conn:
+        with _db(write=write) as conn:
             cur = conn.execute(query, params)
             return [dict(r) for r in cur.fetchall()]
     except RuntimeError:
@@ -91,10 +97,10 @@ def _rows(query: str, params: tuple = ()) -> list[dict]:
         return []
 
 
-def _scalar(query: str, params: tuple = (), default=None):
+def _scalar(query: str, params: tuple = (), default=None, write: bool = False):
     """Run a SELECT returning a single scalar value. Returns default if DB missing."""
     try:
-        with _db() as conn:
+        with _db(write=write) as conn:
             cur = conn.execute(query, params)
             row = cur.fetchone()
             return row[0] if row and row[0] is not None else default
@@ -103,7 +109,7 @@ def _scalar(query: str, params: tuple = (), default=None):
 
 
 # ── Amount helpers ────────────────────────────────────────────────────────────
-# Plaid convention: positive amount = money OUT (expense), negative = money IN (income).
+# Database convention: positive amount = money IN (income), negative = money OUT (expense).
 
 def _net_worth_from_accounts(accounts: list[dict]) -> float:
     """
@@ -193,8 +199,8 @@ def _spend_pivot(start_month: str, end_month: str) -> dict:
         average = sum(avg_vals) / len(avg_vals) if avg_vals else 0.0
         rows.append({"category": cat, "monthly": monthly, "average": average})
 
-    # Sort: largest absolute average first
-    rows.sort(key=lambda r: -abs(r["average"]))
+    # Sort: highest spend (most negative) first, highest income (most positive) last
+    rows.sort(key=lambda r: r["average"])
 
     # Net row: sum of all categories per month
     net_monthly: dict[str, float] = {}
@@ -211,6 +217,140 @@ def _spend_pivot(start_month: str, end_month: str) -> dict:
         "rows": rows,
         "net_row": net_row,
     }
+
+
+def _get_transactions(start_date: str = None, end_date: str = None) -> list[dict]:
+    """
+    Get transactions for the transactions view.
+    
+    Args:
+        start_date: Optional start date in YYYY-MM-DD format.
+        end_date: Optional end date in YYYY-MM-DD format.
+    
+    Returns:
+        List of transaction dicts with Date, Account, Description, Category, Amount.
+    """
+    query = """
+        SELECT 
+            date AS Date,
+            COALESCE(account, institution, 'Unknown') AS Account,
+            COALESCE(merchant, description, '') AS Description,
+            COALESCE(user_category, plaid_category_primary, plaid_category, 'Uncategorized') AS Category,
+            amount AS Amount
+        FROM transactions
+        WHERE excluded = 0 AND pending = 0
+    """
+    params = []
+    
+    if start_date:
+        query += " AND date >= ?"
+        params.append(start_date)
+    
+    if end_date:
+        query += " AND date <= ?"
+        params.append(end_date)
+    
+    query += " ORDER BY date DESC"
+    
+    return _rows(query, tuple(params))
+
+
+def _get_manual_snapshots() -> list[dict]:
+    """
+    Get all manual account snapshots.
+    
+    Returns:
+        List of all manual snapshot dicts ordered by snapshot_date DESC, account_name.
+    """
+    return _rows(
+        """
+        SELECT * FROM manual_account_snapshots
+        ORDER BY snapshot_date DESC, account_name
+        """
+    )
+
+
+def _add_manual_snapshot(snapshot: dict) -> bool:
+    """
+    Add or update a manual account snapshot.
+    
+    Args:
+        snapshot: Dict with keys: snapshot_date, account_id, account_name, 
+                  institution, account_type, account_subtype, current_balance,
+                  available_balance, credit_limit, currency
+    
+    Returns:
+        True if successful, False otherwise.
+    """
+    try:
+        with _db(write=True) as conn:
+            conn.execute(
+                """
+                INSERT INTO manual_account_snapshots 
+                (snapshot_date, account_id, account_name, institution, account_type, 
+                 account_subtype, current_balance, available_balance, credit_limit, currency)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(snapshot_date, account_id) 
+                DO UPDATE SET
+                    account_name = excluded.account_name,
+                    institution = excluded.institution,
+                    account_type = excluded.account_type,
+                    account_subtype = excluded.account_subtype,
+                    current_balance = excluded.current_balance,
+                    available_balance = excluded.available_balance,
+                    credit_limit = excluded.credit_limit,
+                    currency = excluded.currency
+                """,
+                (
+                    snapshot["snapshot_date"],
+                    snapshot["account_id"],
+                    snapshot["account_name"],
+                    snapshot.get("institution", ""),
+                    snapshot.get("account_type", ""),
+                    snapshot.get("account_subtype", ""),
+                    snapshot.get("current_balance", 0.0),
+                    snapshot.get("available_balance", 0.0),
+                    snapshot.get("credit_limit", 0.0),
+                    snapshot.get("currency", "USD"),
+                ),
+            )
+            conn.commit()
+        
+        # Note: Net worth history is calculated on-the-fly in _networth_history()
+        # to always include the latest manual snapshots
+        
+        return True
+    except Exception as e:
+        logger.error(f"Failed to add manual snapshot: {e}")
+        return False
+
+
+def _delete_manual_snapshot(snapshot_date: str, account_id: str) -> bool:
+    """
+    Delete a manual account snapshot.
+    
+    Args:
+        snapshot_date: Date string in YYYY-MM-DD format.
+        account_id: Account ID.
+    
+    Returns:
+        True if successful, False otherwise.
+    """
+    try:
+        with _db(write=True) as conn:
+            conn.execute(
+                "DELETE FROM manual_account_snapshots WHERE snapshot_date = ? AND account_id = ?",
+                (snapshot_date, account_id),
+            )
+            conn.commit()
+        
+        # Note: Net worth history is calculated on-the-fly in _networth_history()
+        # to always include the latest manual snapshots
+        
+        return True
+    except Exception as e:
+        logger.error(f"Failed to delete manual snapshot: {e}")
+        return False
 
 
 def _current_accounts() -> list[dict]:
@@ -251,53 +391,63 @@ def _current_accounts() -> list[dict]:
 
 def _networth_history() -> list[dict]:
     """
-    Monthly net worth history. One data point per month = sum of latest
-    snapshot per account in that month, using asset/liability sign logic.
+    Monthly net worth history from the cached net_worth_history table.
     """
+    # Calculate on-the-fly from both snapshot tables (always up-to-date)
     rows = _rows(
         """
-        WITH combined AS (
-            SELECT account_id, account_type, current_balance, snapshot_date
+        WITH combined_balances AS (
+            SELECT 
+                snapshot_date,
+                account_type,
+                current_balance
             FROM account_snapshots
+            
             UNION ALL
-            SELECT account_id, account_type, current_balance, snapshot_date
+            
+            SELECT 
+                snapshot_date,
+                account_type,
+                current_balance
             FROM manual_account_snapshots
         ),
-        monthly_latest AS (
-            SELECT account_id, account_type, current_balance,
-                   strftime('%Y-%m', snapshot_date) AS month,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY account_id, strftime('%Y-%m', snapshot_date)
-                       ORDER BY snapshot_date DESC
-                   ) AS rn
-            FROM combined
+        daily_net_worth AS (
+            SELECT
+                snapshot_date,
+                SUM(CASE
+                    WHEN account_type IN ('depository', 'investment')
+                    THEN COALESCE(current_balance, 0)
+                    WHEN account_type IN ('credit', 'loan')
+                    THEN -COALESCE(current_balance, 0)
+                    ELSE 0
+                END) as net_worth
+            FROM combined_balances
+            GROUP BY snapshot_date
         )
-        SELECT month, account_id, account_type, current_balance
-        FROM monthly_latest
-        WHERE rn = 1
-        ORDER BY month
+        SELECT strftime('%Y-%m', snapshot_date) AS month, net_worth
+        FROM daily_net_worth
+        ORDER BY snapshot_date
         """
     )
 
-    # Group by month
-    monthly: dict[str, list[dict]] = {}
+    # Group by month (take the last snapshot of each month)
+    monthly: dict[str, float] = {}
     for r in rows:
-        monthly.setdefault(r["month"], []).append(r)
+        monthly[r["month"]] = r["net_worth"]
 
     result = []
     for m in sorted(monthly.keys()):
-        nw = _net_worth_from_accounts(monthly[m])
-        result.append({"month": m, "net_worth": round(nw, 2)})
+        result.append({"month": m, "net_worth": round(monthly[m], 2)})
     return result
 
 
 def _summary_cards() -> dict:
     cur = _current_month()
-    # This month spend / income
+    # This month spend / income (positive=income, negative=expense)
     month_rows = _rows(
         """
-        SELECT SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS spend,
-               SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) AS income,
+        SELECT SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) AS spend,
+               SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS income,
                SUM(amount)                                       AS net
         FROM transactions
         WHERE excluded = 0 AND pending = 0
@@ -338,7 +488,7 @@ def _summary_cards() -> dict:
 
     return {
         "current_month": cur,
-        "spend_this_month": round(spend, 2),
+        "spend_this_month": round(abs(spend), 2),  # Make spend positive for display
         "income_this_month": round(income, 2),
         "net_this_month": round(net, 2),
         "net_worth": round(net_worth, 2),
@@ -393,21 +543,21 @@ def _projections(lookback_months: int = 12) -> dict:
                 "projected_annual": round(avg * 12, 2),
             }
         )
-    projections.sort(key=lambda x: -abs(x["projected_annual"]))
+    projections.sort(key=lambda x: x["projected_annual"])
 
     total_spend_proj = sum(
-        p["projected_annual"] for p in projections if p["projected_annual"] > 0
+        p["projected_annual"] for p in projections if p["projected_annual"] < 0
     )
     total_income_proj = sum(
-        p["projected_annual"] for p in projections if p["projected_annual"] < 0
+        p["projected_annual"] for p in projections if p["projected_annual"] > 0
     )
 
     return {
         "lookback_months": n,
         "rows": projections,
-        "total_projected_spend": round(total_spend_proj, 2),
+        "total_projected_spend": round(abs(total_spend_proj), 2),
         "total_projected_income": round(total_income_proj, 2),
-        "projected_net": round(total_spend_proj + total_income_proj, 2),
+        "projected_net": round(total_income_proj + total_spend_proj, 2),
     }
 
 
@@ -434,6 +584,16 @@ def spend():
 @app.route("/projections")
 def projections():
     return render_template("projections.html")
+
+
+@app.route("/transactions")
+def transactions():
+    return render_template("transactions.html")
+
+
+@app.route("/manual")
+def manual():
+    return render_template("manual.html")
 
 
 @app.route("/networth")
@@ -484,6 +644,48 @@ def api_networth_current():
 @app.route("/api/networth/history")
 def api_networth_history():
     return jsonify(_networth_history())
+
+
+@app.route("/api/transactions")
+def api_transactions():
+    """Get transactions for the transactions view."""
+    start_date = request.args.get("start_date")
+    end_date = request.args.get("end_date")
+    return jsonify(_get_transactions(start_date, end_date))
+
+
+@app.route("/api/manual/snapshots")
+def api_manual_snapshots():
+    """Get all manual account snapshots."""
+    return jsonify(_get_manual_snapshots())
+
+
+@app.route("/api/manual/snapshot", methods=["POST"])
+def api_add_manual_snapshot():
+    """Add or update a manual account snapshot."""
+    data = request.json
+    if not data or "snapshot_date" not in data or "account_id" not in data:
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    if _add_manual_snapshot(data):
+        return jsonify({"success": True})
+    else:
+        return jsonify({"error": "Failed to add snapshot"}), 500
+
+
+@app.route("/api/manual/snapshot", methods=["DELETE"])
+def api_delete_manual_snapshot():
+    """Delete a manual account snapshot."""
+    snapshot_date = request.args.get("snapshot_date")
+    account_id = request.args.get("account_id")
+    
+    if not snapshot_date or not account_id:
+        return jsonify({"error": "Missing required parameters"}), 400
+    
+    if _delete_manual_snapshot(snapshot_date, account_id):
+        return jsonify({"success": True})
+    else:
+        return jsonify({"error": "Failed to delete snapshot"}), 500
 
 
 @app.route("/api/projections")

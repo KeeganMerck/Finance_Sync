@@ -89,11 +89,14 @@ Promise.all([
   fetch('/api/networth/current').then(r => r.json()),
   fetch('/api/networth/history').then(r => r.json()),
 ]).then(([current, history]) => {
+  console.log('Current data:', current);
+  console.log('History data:', history);
   renderCards(current);
   renderAccountTable(current);
   renderAllocationChart(current);
   renderHistoryChart(history);
-}).catch(() => {
+}).catch((error) => {
+  console.error('Error loading net worth data:', error);
   document.getElementById('nw-cards').innerHTML =
     '<p class="col-span-3 text-slate-500 text-sm">Could not load net worth data.</p>';
 });
@@ -271,7 +274,11 @@ function renderAllocationChart(data) {
 function renderHistoryChart(history) {
   if (!history.length) return;
 
-  const values = history.map(h => h.net_worth);
+  // Sort by date ascending for the chart
+  const sortedHistory = [...history].sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date));
+  
+  const values = sortedHistory.map(h => h.net_worth);
+  const labels = sortedHistory.map(h => h.snapshot_date);
   const min = Math.min(...values);
   const max = Math.max(...values);
   const gradient = (ctx) => {
@@ -284,10 +291,7 @@ function renderHistoryChart(history) {
   new Chart(document.getElementById('chart-nw-history'), {
     type: 'line',
     data: {
-      labels: history.map(h => {
-        const [y, m] = h.month.split('-');
-        return new Date(y, m-1, 1).toLocaleString('default', {month:'short',year:'2-digit'});
-      }),
+      labels: labels,
       datasets: [{
         label: 'Net Worth',
         data: values,
@@ -305,11 +309,21 @@ function renderHistoryChart(history) {
       plugins: {
         legend: { display: false },
         tooltip: {
-          callbacks: { label: ctx => fmtAmt(ctx.raw) }
+          callbacks: { 
+            label: ctx => fmtAmt(ctx.raw),
+            title: ctx => ctx[0].label
+          }
         }
       },
       scales: {
-        x: { grid: { color: '#1e293b' } },
+        x: { 
+          grid: { color: '#1e293b' },
+          ticks: {
+            maxTicksLimit: 10,
+            maxRotation: 45,
+            minRotation: 45
+          }
+        },
         y: {
           grid: { color: '#334155' },
           ticks: { callback: v => fmtK(v) },

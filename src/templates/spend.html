@@ -80,6 +80,17 @@ let avgChart = null;
 const EARLIEST = '{{ earliest }}';
 const LATEST   = '{{ latest }}';
 
+/* ─── Navigation to transactions table ─────────────────────────────── */
+function navigateToTransactions(category, month) {
+  // Calculate first and last day of the month
+  const [year, monthNum] = month.split('-');
+  const firstDay = `${year}-${monthNum}-01`;
+  const lastDay = new Date(year, monthNum, 0).toISOString().split('T')[0];
+  
+  // Navigate to transactions page with filters
+  window.location.href = `/transactions?start_date=${firstDay}&end_date=${lastDay}&category=${encodeURIComponent(category)}`;
+}
+
 /* ─── Load and render ───────────────────────────────────────────── */
 function load() {
   const start = document.getElementById('filter-start').value;
@@ -113,7 +124,7 @@ function renderChips(data) {
 
   const chips = [
     { label: 'Months shown',    value: data.months.length,          color: 'text-slate-300' },
-    { label: 'Avg monthly net', value: fmtAmt(net.average),         color: net.average < 0 ? 'text-emerald-400':'text-red-400' },
+    { label: 'Avg monthly net', value: fmtAmt(net.average),         color: net.average > 0 ? 'text-emerald-400':'text-red-400' },
     { label: 'Categories',      value: data.rows.length,            color: 'text-slate-300' },
     { label: 'Complete months', value: complete.length + ' (avg basis)', color: 'text-slate-400' },
   ];
@@ -177,7 +188,8 @@ function renderTable(data) {
     const cells = months.map(m => {
       const v = row.monthly[m] ?? null;
       const partial = isCurrentMonth(m);
-      return `<td class="${bg} text-right px-3 py-2 text-xs ${partial ? 'opacity-60' : ''}">
+      return `<td class="${bg} text-right px-3 py-2 text-xs ${partial ? 'opacity-60' : ''} cursor-pointer hover:text-sky-400 hover:underline"
+                  data-category="${row.category}" data-month="${m}">
         ${v !== null ? amtSpan(v) : '<span class="text-slate-700">—</span>'}
       </td>`;
     }).join('');
@@ -215,6 +227,17 @@ function renderTable(data) {
     </table>
     ${complete_months.length < months.length ? '<p class="text-xs text-amber-400/70 mt-3 px-1">* Current month is partial and excluded from averages.</p>' : ''}
   `;
+  
+  // Add event delegation for double-click navigation
+  const table = wrap.querySelector('table');
+  table.addEventListener('dblclick', (e) => {
+    const cell = e.target.closest('td[data-category][data-month]');
+    if (cell) {
+      const category = cell.getAttribute('data-category');
+      const month = cell.getAttribute('data-month');
+      navigateToTransactions(category, month);
+    }
+  });
 }
 
 /* ─── Average spend bar chart ───────────────────────────────────── */

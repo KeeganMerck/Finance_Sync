@@ -31,7 +31,7 @@
           Full view →
         </a>
       </div>
-      <div class="table-scroll flex-1">
+      <div class="table-scroll flex-1 max-h-80 overflow-y-auto">
         <div id="mini-spend-wrap" class="p-4">
           <div class="spinner"></div>
         </div>
@@ -82,17 +82,17 @@ fetch('/api/summary')
 
     const cards = [
       {
-        label: 'Expenses This Month',
-        value: fmtAmt(d.spend_this_month),
-        sub: 'money out',
-        color: 'text-red-400',
-        icon: '↑'
-      },
-      {
         label: 'Income This Month',
         value: fmtAmt(d.income_this_month),
         sub: 'money in',
         color: 'text-emerald-400',
+        icon: '↑'
+      },
+      {
+        label: 'Expenses This Month',
+        value: fmtAmt(d.spend_this_month),
+        sub: 'money out',
+        color: 'text-red-400',
         icon: '↓'
       },
       {
@@ -138,8 +138,7 @@ fetch('/api/spend/monthly')
     const complete = data.complete_months;
     const months = (complete.length > 0 ? complete : data.months).slice(-6);
 
-    // top 8 categories by |average|
-    const rows = data.rows.slice(0, 8);
+    const rows = data.rows;
 
     function monthLabel(m) {
       const [y, mo] = m.split('-');
@@ -232,16 +231,17 @@ fetch('/api/networth/history')
   .then(r => r.json())
   .then(history => {
     if (!history.length) return;
+    
+    // Sort by date ascending for the chart
+    const sortedHistory = [...history].sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date));
+    
     new Chart(document.getElementById('chart-networth'), {
       type: 'line',
       data: {
-        labels: history.map(h => {
-          const [y,m] = h.month.split('-');
-          return new Date(y,m-1,1).toLocaleString('default',{month:'short',year:'2-digit'});
-        }),
+        labels: sortedHistory.map(h => h.snapshot_date),
         datasets: [{
           label: 'Net Worth',
-          data: history.map(h => h.net_worth),
+          data: sortedHistory.map(h => h.net_worth),
           borderColor: '#38bdf8',
           backgroundColor: 'rgba(56,189,248,0.08)',
           fill: true,
@@ -252,14 +252,25 @@ fetch('/api/networth/history')
       },
       options: {
         responsive: true,
+        maintainAspectRatio: false,
         plugins: {
           legend: { display: false },
           tooltip: {
-            callbacks: { label: ctx => fmtAmt(ctx.raw) }
+            callbacks: { 
+              label: ctx => fmtAmt(ctx.raw),
+              title: ctx => ctx[0].label
+            }
           }
         },
         scales: {
-          x: { grid: { color: '#1e293b' } },
+          x: { 
+            grid: { color: '#1e293b' },
+            ticks: {
+              maxTicksLimit: 8,
+              maxRotation: 45,
+              minRotation: 45
+            }
+          },
           y: {
             grid: { color: '#334155' },
             ticks: { callback: v => fmtK(v) }
@@ -267,6 +278,7 @@ fetch('/api/networth/history')
         }
       }
     });
-  });
+  })
+  .catch(() => {});
 </script>
 {% endblock %}

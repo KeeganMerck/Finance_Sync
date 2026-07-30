@@ -88,9 +88,20 @@ PLAID_FORCE_REFRESH: bool = os.getenv('PLAID_FORCE_REFRESH', 'true').lower() == 
 SYNC_MODE: str = os.getenv('SYNC_MODE', 'full').strip().lower()
 
 # Rolling window for institutions that already have data in the DB.
+# This controls how far back to fetch from Plaid API for existing institutions.
+# 
+# IMPORTANT: Historical data in the database is NEVER automatically deleted.
+# Only manual database deletion can remove transactions. This setting only affects
+# API efficiency by limiting how far back we fetch from Plaid on each sync.
+# 
+# This allows you to:
+# - Set ROLLING_SYNC_DAYS to 14 for efficient daily syncs
+# - Keep years of historical data in your database
+# - Manually edit transactions (user_category, excluded) without losing changes
+# - Have Plaid updates only trigger when data actually changes
+#
 # 14 days catches pending→posted transitions and any recent corrections.
-# CHANGE BACK TO 14 ONCE GOOGLE SHEETS FUNCTIONS ARE BETTER
-ROLLING_SYNC_DAYS: int = int(os.getenv('ROLLING_SYNC_DAYS', '730'))
+ROLLING_SYNC_DAYS: int = int(os.getenv('ROLLING_SYNC_DAYS', '14'))
 
 # How far back to fetch for a brand-new institution (no DB records for it yet).
 # Plaid supports up to 730 days (2 years) of history on most institutions.

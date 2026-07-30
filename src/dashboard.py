@@ -17,16 +17,19 @@ Serves six pages:
 
 Usage:
     python -m src.dashboard                   # syncs then opens http://localhost:5000
+    python -m src.dashboard --no-sync         # skips sync, opens dashboard with existing data
     DASHBOARD_PORT=8080 python -m src.dashboard
 
 To push to Google Sheets instead of opening the dashboard:
     python -m src.google_sheets
 """
 
+import argparse
 import json
 import logging
 import os
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -36,6 +39,7 @@ from flask import Flask, Response, jsonify, render_template, request
 
 # ── Config ────────────────────────────────────────────────────────────────────
 from .core.config import DATABASE_PATH
+from .core.config import ROLLING_SYNC_DAYS
 
 _HERE = Path(__file__).resolve().parent
 # Port 5000 is required for Replit's webview; override with DASHBOARD_PORT locally
@@ -150,30 +154,45 @@ def _current_month() -> str:
 
 def _spend_pivot(start_month: str, end_month: str) -> dict:
     """
-    Build a pivot of monthly spend by category.
+    Build a pivot of monthly spend by category (including manual transactions).
 
     Returns:
         months         — ordered list of YYYY-MM strings in range
         complete_months— months used for average (excludes partial current month)
         rows           — list of {category, monthly: {YYYY-MM: float}, average: float}
-                         sorted by |average| descending
+                         sorted by average (spending first, income last)
         net_row        — {monthly: {YYYY-MM: float}, average: float}
     """
     raw = _rows(
         """
+        WITH combined_transactions AS (
+            SELECT
+                strftime('%Y-%m', date)                                            AS month,
+                COALESCE(user_category, plaid_category_primary, plaid_category,
+                         'Uncategorized')                                          AS category,
+                amount                                                            AS amount
+            FROM transactions
+            WHERE excluded = 0
+              AND pending  = 0
+              AND strftime('%Y-%m', date) BETWEEN ? AND ?
+            
+            UNION ALL
+            
+            SELECT
+                strftime('%Y-%m', date)                                            AS month,
+                COALESCE(category, 'Uncategorized')                                 AS category,
+                amount                                                            AS amount
+            FROM manual_transactions
+            WHERE strftime('%Y-%m', date) BETWEEN ? AND ?
+        )
         SELECT
-            strftime('%Y-%m', date)                                            AS month,
-            COALESCE(user_category, plaid_category_primary, plaid_category,
-                     'Uncategorized')                                          AS category,
-            SUM(amount)                                                        AS total
-        FROM transactions
-        WHERE excluded = 0
-          AND pending  = 0
-          AND strftime('%Y-%m', date) BETWEEN ? AND ?
+            month,
+            category,
+            SUM(amount) AS total
+        FROM combined_transactions
         GROUP BY 1, 2
-        ORDER BY 1, 2
         """,
-        (start_month, end_month),
+        (start_month, end_month, start_month, end_month),
     )
 
     # Build sorted month list
@@ -221,7 +240,7 @@ def _spend_pivot(start_month: str, end_month: str) -> dict:
 
 def _get_transactions(start_date: str = None, end_date: str = None) -> list[dict]:
     """
-    Get transactions for the transactions view.
+    Get transactions for the transactions view (both Plaid and manual).
     
     Args:
         start_date: Optional start date in YYYY-MM-DD format.
@@ -230,13 +249,17 @@ def _get_transactions(start_date: str = None, end_date: str = None) -> list[dict
     Returns:
         List of transaction dicts with Date, Account, Description, Category, Amount.
     """
+    # Get Plaid transactions
     query = """
         SELECT 
             date AS Date,
             COALESCE(account, institution, 'Unknown') AS Account,
             COALESCE(merchant, description, '') AS Description,
             COALESCE(user_category, plaid_category_primary, plaid_category, 'Uncategorized') AS Category,
-            amount AS Amount
+            amount AS Amount,
+            transaction_id,
+            last_updated,
+            'plaid' as source
         FROM transactions
         WHERE excluded = 0 AND pending = 0
     """
@@ -250,9 +273,41 @@ def _get_transactions(start_date: str = None, end_date: str = None) -> list[dict
         query += " AND date <= ?"
         params.append(end_date)
     
-    query += " ORDER BY date DESC"
+    plaid_txns = _rows(query, tuple(params))
     
-    return _rows(query, tuple(params))
+    # Get manual transactions
+    manual_query = """
+        SELECT 
+            date AS Date,
+            account AS Account,
+            COALESCE(description, '') AS Description,
+            COALESCE(category, 'Uncategorized') AS Category,
+            amount AS Amount,
+            transaction_id,
+            last_updated,
+            'manual' as source
+        FROM manual_transactions
+    """
+    manual_params = []
+    
+    if start_date:
+        manual_query += " WHERE date >= ?"
+        manual_params.append(start_date)
+    
+    if end_date:
+        if manual_params:
+            manual_query += " AND date <= ?"
+        else:
+            manual_query += " WHERE date <= ?"
+        manual_params.append(end_date)
+    
+    manual_txns = _rows(manual_query, tuple(manual_params))
+    
+    # Combine and sort by date DESC
+    all_txns = plaid_txns + manual_txns
+    all_txns.sort(key=lambda x: x["Date"], reverse=True)
+    
+    return all_txns
 
 
 def _get_manual_snapshots() -> list[dict]:
@@ -360,22 +415,55 @@ def _current_accounts() -> list[dict]:
     """
     return _rows(
         """
-        WITH combined AS (
+        WITH latest_date AS (
+            SELECT MAX(snapshot_date) as max_date FROM account_snapshots
+        ),
+        manual_forward_fill AS (
+            -- Get the latest manual snapshot for each account as of the latest date
+            SELECT 
+                m.account_id,
+                m.account_name,
+                m.institution,
+                m.account_type,
+                m.account_subtype,
+                m.current_balance,
+                m.available_balance,
+                m.credit_limit,
+                m.snapshot_date,
+                ROW_NUMBER() OVER (
+                    PARTITION BY m.account_id
+                    ORDER BY m.snapshot_date DESC
+                ) AS rn
+            FROM manual_account_snapshots m
+            WHERE m.snapshot_date <= (SELECT max_date FROM latest_date)
+        ),
+        latest_manual AS (
             SELECT account_id, account_name, institution, account_type,
                    account_subtype, current_balance, available_balance,
                    credit_limit, snapshot_date
+            FROM manual_forward_fill
+            WHERE rn = 1
+        ),
+        combined AS (
+            -- Start with Plaid snapshots
+            SELECT account_id, account_name, institution, account_type,
+                   account_subtype, current_balance, available_balance,
+                   credit_limit, snapshot_date, 'plaid' as source
             FROM account_snapshots
             UNION ALL
+            -- Add forward-filled manual snapshots
             SELECT account_id, account_name, institution, account_type,
                    account_subtype, current_balance, available_balance,
-                   credit_limit, snapshot_date
-            FROM manual_account_snapshots
+                   credit_limit, snapshot_date, 'manual' as source
+            FROM latest_manual
         ),
         ranked AS (
             SELECT *,
                    ROW_NUMBER() OVER (
                        PARTITION BY account_id
-                       ORDER BY snapshot_date DESC
+                       ORDER BY 
+                           CASE WHEN source = 'manual' THEN 1 ELSE 0 END DESC,
+                           snapshot_date DESC
                    ) AS rn
             FROM combined
         )
@@ -391,25 +479,63 @@ def _current_accounts() -> list[dict]:
 
 def _networth_history() -> list[dict]:
     """
-    Monthly net worth history from the cached net_worth_history table.
+    Daily net worth history with forward-filled manual account values.
+    Manual snapshots carry forward by account ID until a new manual snapshot is created.
     """
     # Calculate on-the-fly from both snapshot tables (always up-to-date)
     rows = _rows(
         """
-        WITH combined_balances AS (
+        WITH all_dates AS (
+            SELECT DISTINCT snapshot_date FROM account_snapshots
+        ),
+        manual_by_date AS (
+            -- For each date, get the latest manual snapshot for each account on or before that date
+            SELECT 
+                a.snapshot_date,
+                m.account_id,
+                m.account_type,
+                m.current_balance,
+                ROW_NUMBER() OVER (
+                    PARTITION BY a.snapshot_date, m.account_id
+                    ORDER BY m.snapshot_date DESC
+                ) AS rn
+            FROM all_dates a
+            LEFT JOIN manual_account_snapshots m ON m.snapshot_date <= a.snapshot_date
+        ),
+        latest_manual_by_date AS (
+            SELECT snapshot_date, account_id, account_type, current_balance
+            FROM manual_by_date
+            WHERE rn = 1
+        ),
+        combined_balances AS (
+            -- Start with Plaid snapshots
             SELECT 
                 snapshot_date,
+                account_id,
                 account_type,
-                current_balance
+                current_balance,
+                'plaid' as source
             FROM account_snapshots
             
             UNION ALL
             
-            SELECT 
+            -- Add forward-filled manual snapshots (replace Plaid for same account_id)
+            SELECT snapshot_date, account_id, account_type, current_balance, 'manual' as source
+            FROM latest_manual_by_date
+            WHERE current_balance IS NOT NULL
+        ),
+        prioritized AS (
+            -- Prioritize manual over plaid for same account_id and date
+            SELECT
                 snapshot_date,
                 account_type,
-                current_balance
-            FROM manual_account_snapshots
+                current_balance,
+                ROW_NUMBER() OVER (
+                    PARTITION BY snapshot_date, account_id
+                    ORDER BY 
+                        CASE WHEN source = 'manual' THEN 1 ELSE 0 END DESC
+                ) AS rn
+            FROM combined_balances
         ),
         daily_net_worth AS (
             SELECT
@@ -421,29 +547,25 @@ def _networth_history() -> list[dict]:
                     THEN -COALESCE(current_balance, 0)
                     ELSE 0
                 END) as net_worth
-            FROM combined_balances
+            FROM prioritized
+            WHERE rn = 1
             GROUP BY snapshot_date
         )
-        SELECT strftime('%Y-%m', snapshot_date) AS month, net_worth
+        SELECT snapshot_date, net_worth
         FROM daily_net_worth
-        ORDER BY snapshot_date
+        ORDER BY snapshot_date ASC
         """
     )
 
-    # Group by month (take the last snapshot of each month)
-    monthly: dict[str, float] = {}
-    for r in rows:
-        monthly[r["month"]] = r["net_worth"]
-
     result = []
-    for m in sorted(monthly.keys()):
-        result.append({"month": m, "net_worth": round(monthly[m], 2)})
+    for r in rows:
+        result.append({"snapshot_date": r["snapshot_date"], "net_worth": round(r["net_worth"], 2)})
     return result
 
 
 def _summary_cards() -> dict:
     cur = _current_month()
-    # This month spend / income (positive=income, negative=expense)
+    # This month spend / income (positive=income, negative=expense) - including manual transactions
     month_rows = _rows(
         """
         SELECT SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) AS spend,
@@ -452,19 +574,28 @@ def _summary_cards() -> dict:
         FROM transactions
         WHERE excluded = 0 AND pending = 0
           AND strftime('%Y-%m', date) = ?
+        
+        UNION ALL
+        
+        SELECT SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) AS spend,
+               SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS income,
+               SUM(amount)                                       AS net
+        FROM manual_transactions
+        WHERE strftime('%Y-%m', date) = ?
         """,
-        (cur,),
+        (cur, cur),
     )
-    m = month_rows[0] if month_rows else {}
-    spend = m.get("spend") or 0.0
-    income = m.get("income") or 0.0
-    net = m.get("net") or 0.0
+    
+    # Aggregate the results
+    spend = sum(r.get("spend") or 0.0 for r in month_rows)
+    income = sum(r.get("income") or 0.0 for r in month_rows)
+    net = sum(r.get("net") or 0.0 for r in month_rows)
 
     # Current net worth
     accounts = _current_accounts()
     net_worth = _net_worth_from_accounts(accounts)
 
-    # Average monthly net (complete months, last 12)
+    # Average monthly net (complete months, last 12) - including manual transactions
     avg_rows = _rows(
         """
         SELECT strftime('%Y-%m', date) AS month, SUM(amount) AS total
@@ -472,13 +603,25 @@ def _summary_cards() -> dict:
         WHERE excluded = 0 AND pending = 0
           AND strftime('%Y-%m', date) < ?
         GROUP BY 1
-        ORDER BY 1 DESC
-        LIMIT 12
+        
+        UNION ALL
+        
+        SELECT strftime('%Y-%m', date) AS month, SUM(amount) AS total
+        FROM manual_transactions
+        WHERE strftime('%Y-%m', date) < ?
+        GROUP BY 1
         """,
-        (cur,),
+        (cur, cur),
     )
+    
+    # Aggregate by month
+    monthly_totals = {}
+    for r in avg_rows:
+        month = r["month"]
+        monthly_totals[month] = monthly_totals.get(month, 0) + r["total"]
+    
     avg_net = (
-        sum(r["total"] for r in avg_rows) / len(avg_rows) if avg_rows else 0.0
+        sum(monthly_totals.values()) / len(monthly_totals) if monthly_totals else 0.0
     )
 
     last_sync = _scalar(
@@ -514,9 +657,19 @@ def _projections(lookback_months: int = 12) -> dict:
           AND pending  = 0
           AND strftime('%Y-%m', date) < ?
         GROUP BY 1, 2
+        
+        UNION ALL
+        
+        SELECT
+            strftime('%Y-%m', date)                                            AS month,
+            COALESCE(category, 'Uncategorized')                                 AS category,
+            SUM(amount)                                                        AS total
+        FROM manual_transactions
+        WHERE strftime('%Y-%m', date) < ?
+        GROUP BY 1, 2
         ORDER BY 1 DESC
         """,
-        (cur,),
+        (cur, cur),
     )
 
     # Keep only the most recent lookback_months of data
@@ -528,10 +681,14 @@ def _projections(lookback_months: int = 12) -> dict:
     rows = [r for r in rows if r["month"] in keep_months]
     n = len(keep_months) or 1
 
-    # Pivot and average
+    # Aggregate by month
     pivot: dict[str, dict[str, float]] = {}
     for r in rows:
-        pivot.setdefault(r["category"], {})[r["month"]] = r["total"]
+        cat = r["category"]
+        month = r["month"]
+        if cat not in pivot:
+            pivot[cat] = {}
+        pivot[cat][month] = pivot[cat].get(month, 0) + r["total"]
 
     projections = []
     for cat, monthly in pivot.items():
@@ -619,31 +776,126 @@ def api_spend_monthly():
 
 @app.route("/api/networth/current")
 def api_networth_current():
-    accounts = _current_accounts()
-    net_worth = _net_worth_from_accounts(accounts)
-    assets = sum(
-        a["current_balance"] or 0
-        for a in accounts
-        if (a.get("account_type") or "").lower() in ("depository", "investment")
-    )
-    liabilities = sum(
-        a["current_balance"] or 0
-        for a in accounts
-        if (a.get("account_type") or "").lower() in ("credit", "loan")
-    )
-    return jsonify(
-        {
-            "net_worth": round(net_worth, 2),
-            "total_assets": round(assets, 2),
-            "total_liabilities": round(liabilities, 2),
-            "accounts": accounts,
-        }
-    )
+    try:
+        accounts = _current_accounts()
+        net_worth = _net_worth_from_accounts(accounts)
+        assets = sum(
+            a["current_balance"] or 0
+            for a in accounts
+            if (a.get("account_type") or "").lower() in ("depository", "investment")
+        )
+        liabilities = sum(
+            a["current_balance"] or 0
+            for a in accounts
+            if (a.get("account_type") or "").lower() in ("credit", "loan")
+        )
+        return jsonify(
+            {
+                "net_worth": round(net_worth, 2),
+                "total_assets": round(assets, 2),
+                "total_liabilities": round(liabilities, 2),
+                "accounts": accounts,
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error in api_networth_current: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/networth/history")
 def api_networth_history():
-    return jsonify(_networth_history())
+    """Get daily net worth history with forward-filled manual account values."""
+    try:
+        return jsonify(_networth_history())
+    except Exception as e:
+        logger.error(f"Error in api_networth_history: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/networth/daily")
+def api_networth_daily():
+    """Get daily net worth history with forward-filled manual account values."""
+    rows = _rows(
+        """
+        WITH all_dates AS (
+            SELECT DISTINCT snapshot_date FROM account_snapshots
+        ),
+        manual_by_date AS (
+            -- For each date, get the latest manual snapshot for each account on or before that date
+            SELECT 
+                a.snapshot_date,
+                m.account_id,
+                m.account_type,
+                m.current_balance,
+                ROW_NUMBER() OVER (
+                    PARTITION BY a.snapshot_date, m.account_id
+                    ORDER BY m.snapshot_date DESC
+                ) AS rn
+            FROM all_dates a
+            LEFT JOIN manual_account_snapshots m ON m.snapshot_date <= a.snapshot_date
+        ),
+        latest_manual_by_date AS (
+            SELECT snapshot_date, account_id, account_type, current_balance
+            FROM manual_by_date
+            WHERE rn = 1
+        ),
+        combined_balances AS (
+            -- Start with Plaid snapshots
+            SELECT 
+                snapshot_date,
+                account_id,
+                account_type,
+                current_balance,
+                'plaid' as source
+            FROM account_snapshots
+            
+            UNION ALL
+            
+            -- Add forward-filled manual snapshots (replace Plaid for same account_id)
+            SELECT snapshot_date, account_id, account_type, current_balance, 'manual' as source
+            FROM latest_manual_by_date
+            WHERE current_balance IS NOT NULL
+        ),
+        prioritized AS (
+            -- Prioritize manual over plaid for same account_id and date
+            SELECT
+                snapshot_date,
+                account_type,
+                current_balance,
+                ROW_NUMBER() OVER (
+                    PARTITION BY snapshot_date, account_id
+                    ORDER BY 
+                        CASE WHEN source = 'manual' THEN 1 ELSE 0 END DESC
+                ) AS rn
+            FROM combined_balances
+        ),
+        daily_net_worth AS (
+            SELECT
+                snapshot_date,
+                SUM(CASE
+                    WHEN account_type IN ('depository', 'investment')
+                    THEN COALESCE(current_balance, 0)
+                    WHEN account_type IN ('credit', 'loan')
+                    THEN -COALESCE(current_balance, 0)
+                    ELSE 0
+                END) as net_worth
+            FROM prioritized
+            WHERE rn = 1
+            GROUP BY snapshot_date
+        )
+        SELECT snapshot_date, net_worth
+        FROM daily_net_worth
+        ORDER BY snapshot_date DESC
+        """
+    )
+    
+    result = []
+    for r in rows:
+        result.append({
+            "snapshot_date": r["snapshot_date"],
+            "net_worth": round(r["net_worth"], 2)
+        })
+    return jsonify(result)
 
 
 @app.route("/api/transactions")
@@ -652,6 +904,105 @@ def api_transactions():
     start_date = request.args.get("start_date")
     end_date = request.args.get("end_date")
     return jsonify(_get_transactions(start_date, end_date))
+
+
+@app.route("/api/transaction/update", methods=["POST"])
+def api_update_transaction():
+    """Update transaction description, category, or exclusion status."""
+    data = request.json
+    if not data or "transaction_id" not in data:
+        return jsonify({"error": "Missing transaction_id"}), 400
+    
+    transaction_id = data["transaction_id"]
+    updates = {}
+    
+    if "description" in data:
+        updates["description"] = data["description"]
+    if "category" in data:
+        updates["user_category"] = data["category"]
+    if "excluded" in data:
+        updates["excluded"] = data["excluded"]
+    
+    if not updates:
+        return jsonify({"error": "No fields to update"}), 400
+    
+    try:
+        with _db(write=True) as conn:
+            set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+            values = list(updates.values()) + [transaction_id]
+            
+            conn.execute(
+                f"UPDATE transactions SET {set_clause}, last_updated = datetime('now') WHERE transaction_id = ?",
+                values
+            )
+            conn.commit()
+        
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error(f"Failed to update transaction: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/manual/transactions")
+def api_manual_transactions():
+    """Get all manual transactions."""
+    from .modules.database import get_manual_transactions
+    return jsonify(get_manual_transactions())
+
+
+@app.route("/api/manual/transaction", methods=["POST"])
+def api_add_manual_transaction():
+    """Add or update a manual transaction."""
+    from .modules.database import upsert_manual_transaction
+    
+    data = request.json
+    if not data or "date" not in data or "amount" not in data:
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    # Generate transaction_id if not provided
+    if "transaction_id" not in data:
+        data["transaction_id"] = f"manual_{uuid.uuid4().hex[:16]}"
+    
+    try:
+        upsert_manual_transaction(data)
+        return jsonify({"success": True, "transaction_id": data["transaction_id"]})
+    except Exception as e:
+        logger.error(f"Failed to add manual transaction: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/manual/transaction", methods=["PUT"])
+def api_update_manual_transaction():
+    """Update a manual transaction (all fields editable)."""
+    from .modules.database import upsert_manual_transaction
+    
+    data = request.json
+    if not data or "transaction_id" not in data:
+        return jsonify({"error": "Missing transaction_id"}), 400
+    
+    try:
+        upsert_manual_transaction(data)
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error(f"Failed to update manual transaction: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/manual/transaction", methods=["DELETE"])
+def api_delete_manual_transaction():
+    """Delete a manual transaction."""
+    from .modules.database import delete_manual_transaction
+    
+    transaction_id = request.args.get("transaction_id")
+    if not transaction_id:
+        return jsonify({"error": "Missing transaction_id"}), 400
+    
+    try:
+        delete_manual_transaction(transaction_id)
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error(f"Failed to delete manual transaction: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/manual/snapshots")
@@ -706,30 +1057,41 @@ def _print_startup():
 
 
 if __name__ == "__main__":
-    # ── Run the sync pipeline first ───────────────────────────────────────────
-    # Import here (not at module top) to avoid circular imports with config.
-    from .main import run_pipeline  # noqa: PLC0415
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Finance Sync Dashboard")
+    parser.add_argument("--no-sync", action="store_true", 
+                       help="Skip data sync and start dashboard with existing data")
+    args = parser.parse_args()
+    
+    # ── Run the sync pipeline first (unless --no-sync is specified) ─────────────────────
+    if not args.no_sync:
+        # Import here (not at module top) to avoid circular imports with config.
+        from .main import run_pipeline  # noqa: PLC0415
 
-    print("\n" + "=" * 60)
-    print("  Finance Sync — Syncing data before dashboard start…")
-    print("=" * 60 + "\n")
+        print("\n" + "=" * 60)
+        print("  Finance Sync — Syncing data before dashboard start…")
+        print("=" * 60 + "\n")
 
-    try:
-        run_pipeline(enable_sheets=False)
-    except SystemExit as exc:
-        # run_pipeline calls sys.exit(1) on fatal pipeline errors.
-        # We still want to start the dashboard so the user can see whatever
-        # data is already in the DB, but we surface the failure clearly.
-        if exc.code != 0:
-            print(
-                "\n  ⚠️  Pipeline exited with an error — starting dashboard "
-                "with existing database data.\n"
+        try:
+            run_pipeline(enable_sheets=False)
+        except SystemExit as exc:
+            # run_pipeline calls sys.exit(1) on fatal pipeline errors.
+            # We still want to start the dashboard so the user can see whatever
+            # data is already in the DB, but we surface the failure clearly.
+            if exc.code != 0:
+                print(
+                    "\n  ⚠️  Pipeline exited with an error — starting dashboard "
+                    "with existing database data.\n"
+                )
+        except Exception:
+            logger.exception(
+                "Pipeline raised an unexpected error — starting dashboard "
+                "with existing database data."
             )
-    except Exception:
-        logger.exception(
-            "Pipeline raised an unexpected error — starting dashboard "
-            "with existing database data."
-        )
+    else:
+        print("\n" + "=" * 60)
+        print("  Finance Sync — Skipping data sync, starting dashboard…")
+        print("=" * 60 + "\n")
 
     # ── Start the web server ──────────────────────────────────────────────────
     _print_startup()

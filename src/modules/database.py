@@ -49,6 +49,105 @@ from ..core.config import DATABASE_PATH, ENABLE_DATABASE
 logger = logging.getLogger(__name__)
 
 
+def validate_manual_transaction(transaction: dict) -> tuple[bool, str]:
+    """
+    Validate a manual transaction before insertion.
+    
+    Args:
+        transaction: Dict with transaction data
+    
+    Returns:
+        (is_valid, error_message)
+    """
+    required_fields = ['transaction_id', 'date', 'account', 'amount']
+    
+    # Check required fields
+    for field in required_fields:
+        if field not in transaction or not transaction[field]:
+            return False, f"Missing required field: {field}"
+    
+    # Validate date format (YYYY-MM-DD)
+    date = transaction['date']
+    try:
+        from datetime import datetime
+        datetime.strptime(date, '%Y-%m-%d')
+    except ValueError:
+        return False, f"Invalid date format: {date}. Expected YYYY-MM-DD"
+    
+    # Validate amount is numeric and non-zero
+    try:
+        amount = float(transaction['amount'])
+        if abs(amount) < 0.01:  # Allow very small numbers but not exactly zero
+            return False, "Amount cannot be zero"
+    except (ValueError, TypeError):
+        return False, f"Invalid amount: {transaction['amount']}. Must be a number"
+    
+    # Validate account name is not empty
+    if not transaction['account'].strip():
+        return False, "Account name cannot be empty"
+    
+    # Validate description length
+    if 'description' in transaction and transaction['description']:
+        if len(transaction['description']) > 500:
+            return False, "Description too long (max 500 characters)"
+    
+    # Validate category length
+    if 'category' in transaction and transaction['category']:
+        if len(transaction['category']) > 100:
+            return False, "Category too long (max 100 characters)"
+    
+    return True, ""
+
+
+def validate_manual_account_snapshot(snapshot: dict) -> tuple[bool, str]:
+    """
+    Validate a manual account snapshot before insertion.
+    
+    Args:
+        snapshot: Dict with snapshot data
+    
+    Returns:
+        (is_valid, error_message)
+    """
+    required_fields = ['account_id', 'snapshot_date', 'account_type', 'current_balance']
+    
+    # Check required fields
+    for field in required_fields:
+        if field not in snapshot or not snapshot[field]:
+            return False, f"Missing required field: {field}"
+    
+    # Validate date format (YYYY-MM-DD)
+    date = snapshot['snapshot_date']
+    try:
+        from datetime import datetime
+        datetime.strptime(date, '%Y-%m-%d')
+    except ValueError:
+        return False, f"Invalid date format: {date}. Expected YYYY-MM-DD"
+    
+    # Validate account type
+    valid_account_types = ['depository', 'credit', 'investment', 'loan', 'brokerage']
+    if snapshot['account_type'].lower() not in valid_account_types:
+        return False, f"Invalid account type: {snapshot['account_type']}. Must be one of: {', '.join(valid_account_types)}"
+    
+    # Validate balance is numeric
+    try:
+        balance = float(snapshot['current_balance'])
+    except (ValueError, TypeError):
+        return False, f"Invalid balance: {snapshot['current_balance']}. Must be a number"
+    
+    # Validate account name length
+    if 'account_name' in snapshot and snapshot['account_name']:
+        if len(snapshot['account_name']) > 100:
+            return False, "Account name too long (max 100 characters)"
+    
+    # Validate institution length
+    if 'institution' in snapshot and snapshot['institution']:
+        if len(snapshot['institution']) > 100:
+            return False, "Institution name too long (max 100 characters)"
+    
+    return True, ""
+
+
 # ─── Schema DDL ────────────────────────────────────────────────────────────────
 
 _CREATE_TRANSACTIONS_TABLE = """
@@ -372,6 +471,11 @@ def upsert_manual_transaction(transaction: dict, db_path: Path = DATABASE_PATH) 
     if not ENABLE_DATABASE:
         logger.debug("Database disabled — skipping manual transaction upsert.")
         return
+    
+    # Validate transaction
+    is_valid, error_message = validate_manual_transaction(transaction)
+    if not is_valid:
+        raise ValueError(error_message)
 
     with _get_connection(db_path) as conn:
         conn.execute(

@@ -72,31 +72,33 @@
 fetch('/api/summary')
   .then(r => r.json())
   .then(d => {
-    // Header date label
+    // Header date label - show rolling month range
     const label = document.getElementById('month-label');
-    if (label && d.current_month) {
-      const [y, m] = d.current_month.split('-');
-      const name = new Date(y, m-1, 1).toLocaleString('default',{month:'long',year:'numeric'});
-      label.textContent = name;
+    if (label && d.rolling_start_date && d.rolling_end_date) {
+      const start = new Date(d.rolling_start_date);
+      const end = new Date(d.rolling_end_date);
+      const startStr = start.toLocaleDateString('default', { month: 'short', day: 'numeric' });
+      const endStr = end.toLocaleDateString('default', { month: 'short', day: 'numeric', year: 'numeric' });
+      label.textContent = `Rolling month: ${startStr} to ${endStr}`;
     }
 
     const cards = [
       {
-        label: 'Income This Month',
+        label: 'Income (Rolling Month)',
         value: fmtAmt(d.income_this_month),
         sub: 'money in',
         color: 'text-emerald-400',
         icon: '↑'
       },
       {
-        label: 'Expenses This Month',
+        label: 'Expenses (Rolling Month)',
         value: fmtAmt(d.spend_this_month),
         sub: 'money out',
         color: 'text-red-400',
         icon: '↓'
       },
       {
-        label: 'Net This Month',
+        label: 'Net (Rolling Month)',
         value: fmtAmt(d.net_this_month),
         sub: d.net_this_month >= 0 ? 'saved' : 'over budget',
         color: d.net_this_month >= 0 ? 'text-emerald-400' : 'text-red-400',

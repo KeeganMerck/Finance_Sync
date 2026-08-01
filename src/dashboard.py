@@ -25,6 +25,8 @@ To push to Google Sheets instead of opening the dashboard:
 """
 
 import argparse
+import csv
+import io
 import json
 import logging
 import os
@@ -150,6 +152,21 @@ def _date_range_bounds() -> tuple[str, str]:
 
 def _current_month() -> str:
     return date.today().strftime("%Y-%m")
+
+
+def _rolling_month_range() -> tuple[str, str]:
+    """
+    Get rolling month date range (same day last month to today).
+    Simple approach: subtract 30 days for rolling month.
+    
+    Returns:
+        (start_date, end_date) in YYYY-MM-DD format
+    """
+    today = date.today()
+    # Use 30 days as approximate rolling month
+    start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+    end_date = today.strftime("%Y-%m-%d")
+    return start_date, end_date
 
 
 def _spend_pivot(start_month: str, end_month: str) -> dict:
@@ -327,7 +344,7 @@ def _get_manual_snapshots() -> list[dict]:
 
 def _add_manual_snapshot(snapshot: dict) -> bool:
     """
-    Add or update a manual account snapshot.
+    Add or update a manual account snapshot with validation.
     
     Args:
         snapshot: Dict with keys: snapshot_date, account_id, account_name, 
@@ -337,6 +354,14 @@ def _add_manual_snapshot(snapshot: dict) -> bool:
     Returns:
         True if successful, False otherwise.
     """
+    from .modules.database import validate_manual_account_snapshot
+    
+    # Validate snapshot
+    is_valid, error_message = validate_manual_account_snapshot(snapshot)
+    if not is_valid:
+        logger.error(f"Invalid manual snapshot: {error_message}")
+        return False
+    
     try:
         with _db(write=True) as conn:
             conn.execute(
@@ -564,8 +589,10 @@ def _networth_history() -> list[dict]:
 
 
 def _summary_cards() -> dict:
+    start_date, end_date = _rolling_month_range()
     cur = _current_month()
-    # This month spend / income (positive=income, negative=expense) - including manual transactions
+    
+    # Rolling month spend / income (positive=income, negative=expense) - including manual transactions
     month_rows = _rows(
         """
         SELECT SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) AS spend,
@@ -573,7 +600,7 @@ def _summary_cards() -> dict:
                SUM(amount)                                       AS net
         FROM transactions
         WHERE excluded = 0 AND pending = 0
-          AND strftime('%Y-%m', date) = ?
+          AND date >= ? AND date <= ?
         
         UNION ALL
         
@@ -581,9 +608,9 @@ def _summary_cards() -> dict:
                SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS income,
                SUM(amount)                                       AS net
         FROM manual_transactions
-        WHERE strftime('%Y-%m', date) = ?
+        WHERE date >= ? AND date <= ?
         """,
-        (cur, cur),
+        (start_date, end_date, start_date, end_date),
     )
     
     # Aggregate the results
@@ -637,6 +664,8 @@ def _summary_cards() -> dict:
         "net_worth": round(net_worth, 2),
         "avg_monthly_net": round(avg_net, 2),
         "last_sync": last_sync,
+        "rolling_start_date": start_date,
+        "rolling_end_date": end_date,
     }
 
 
@@ -735,7 +764,17 @@ def index():
 @app.route("/spend")
 def spend():
     earliest, latest = _date_range_bounds()
-    return render_template("spend.html", earliest=earliest, latest=latest)
+    
+    # Set default start date to June 2025
+    from datetime import datetime
+    default_start = "2025-06"
+    
+    # Use current date as default end date
+    current_year = datetime.now().year
+    current_month = datetime.now().month
+    default_end = f"{current_year}-{current_month:02d}"
+    
+    return render_template("spend.html", earliest=default_start, latest=default_end)
 
 
 @app.route("/projections")
@@ -952,7 +991,7 @@ def api_manual_transactions():
 
 @app.route("/api/manual/transaction", methods=["POST"])
 def api_add_manual_transaction():
-    """Add or update a manual transaction."""
+    """Add or update a manual transaction with validation."""
     from .modules.database import upsert_manual_transaction
     
     data = request.json
@@ -966,6 +1005,10 @@ def api_add_manual_transaction():
     try:
         upsert_manual_transaction(data)
         return jsonify({"success": True, "transaction_id": data["transaction_id"]})
+    except ValueError as e:
+        # Validation error from validate_manual_transaction
+        logger.error(f"Validation error adding manual transaction: {e}")
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error(f"Failed to add manual transaction: {e}")
         return jsonify({"error": str(e)}), 500
@@ -973,7 +1016,7 @@ def api_add_manual_transaction():
 
 @app.route("/api/manual/transaction", methods=["PUT"])
 def api_update_manual_transaction():
-    """Update a manual transaction (all fields editable)."""
+    """Update a manual transaction (all fields editable) with validation."""
     from .modules.database import upsert_manual_transaction
     
     data = request.json
@@ -983,6 +1026,10 @@ def api_update_manual_transaction():
     try:
         upsert_manual_transaction(data)
         return jsonify({"success": True})
+    except ValueError as e:
+        # Validation error from validate_manual_transaction
+        logger.error(f"Validation error updating manual transaction: {e}")
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error(f"Failed to update manual transaction: {e}")
         return jsonify({"error": str(e)}), 500
@@ -1005,6 +1052,118 @@ def api_delete_manual_transaction():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/manual/csv-upload", methods=["POST"])
+def api_csv_upload():
+    """Upload CSV file for bulk manual transaction import with validation and format conversion."""
+    from .modules.database import upsert_manual_transaction, validate_manual_transaction
+    from datetime import datetime
+    
+    if 'csv_file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    
+    file = request.files['csv_file']
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+    
+    if not file.filename.endswith('.csv'):
+        return jsonify({"error": "File must be a CSV"}), 400
+    
+    try:
+        # Read CSV file
+        stream = io.StringIO(file.stream.read().decode('utf-8'))
+        csv_reader = csv.reader(stream)
+        
+        # Skip header row (case-insensitive column matching)
+        header = next(csv_reader, None)
+        if not header:
+            return jsonify({"error": "CSV file is empty"}), 400
+        
+        # Create case-insensitive column mapping
+        column_map = {col.lower().strip(): i for i, col in enumerate(header)}
+        
+        # Find column indices
+        date_idx = column_map.get('date')
+        account_idx = column_map.get('account')
+        description_idx = column_map.get('description')
+        category_idx = column_map.get('category')
+        amount_idx = column_map.get('amount')
+        
+        if None in [date_idx, account_idx, description_idx, category_idx, amount_idx]:
+            return jsonify({"error": f"Missing required columns. Found: {list(column_map.keys())}"}), 400
+        
+        count = 0
+        errors = []
+        
+        for row_num, row in enumerate(csv_reader, start=1):
+            if len(row) < 5:
+                errors.append(f"Row {row_num}: Missing required columns")
+                continue
+            
+            try:
+                # Parse date from MM/DD/YYYY to YYYY-MM-DD
+                date_str = row[date_idx].strip()
+                try:
+                    date_obj = datetime.strptime(date_str, '%m/%d/%Y')
+                    formatted_date = date_obj.strftime('%Y-%m-%d')
+                except ValueError:
+                    # Try YYYY-MM-DD format as fallback
+                    try:
+                        datetime.strptime(date_str, '%Y-%m-%d')
+                        formatted_date = date_str
+                    except ValueError:
+                        errors.append(f"Row {row_num}: Invalid date format: {date_str}. Expected MM/DD/YYYY or YYYY-MM-DD")
+                        continue
+                
+                # Parse amount (remove $ and convert to float)
+                amount_str = row[amount_idx].strip()
+                try:
+                    # Remove dollar sign and convert
+                    amount_str = amount_str.replace('$', '').replace(',', '').strip()
+                    amount = float(amount_str)
+                    if amount == 0:
+                        errors.append(f"Row {row_num}: Amount cannot be zero")
+                        continue
+                except ValueError:
+                    errors.append(f"Row {row_num}: Invalid amount: {row[amount_idx]}")
+                    continue
+                
+                transaction = {
+                    'date': formatted_date,
+                    'account': row[account_idx].strip(),
+                    'description': row[description_idx].strip(),
+                    'category': row[category_idx].strip(),
+                    'amount': amount
+                }
+                
+                # Generate transaction_id
+                transaction['transaction_id'] = f"manual_{uuid.uuid4().hex[:16]}"
+                
+                # Validate transaction
+                is_valid, error_message = validate_manual_transaction(transaction)
+                if not is_valid:
+                    errors.append(f"Row {row_num}: {error_message}")
+                    continue
+                
+                upsert_manual_transaction(transaction)
+                count += 1
+                
+            except Exception as e:
+                errors.append(f"Row {row_num}: {str(e)}")
+        
+        if errors:
+            return jsonify({
+                "success": True, 
+                "count": count,
+                "warnings": f"Imported {count} transactions with {len(errors)} errors: {'; '.join(errors[:5])}"
+            })
+        
+        return jsonify({"success": True, "count": count})
+        
+    except Exception as e:
+        logger.error(f"Failed to process CSV upload: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/manual/snapshots")
 def api_manual_snapshots():
     """Get all manual account snapshots."""
@@ -1013,7 +1172,7 @@ def api_manual_snapshots():
 
 @app.route("/api/manual/snapshot", methods=["POST"])
 def api_add_manual_snapshot():
-    """Add or update a manual account snapshot."""
+    """Add or update a manual account snapshot with validation."""
     data = request.json
     if not data or "snapshot_date" not in data or "account_id" not in data:
         return jsonify({"error": "Missing required fields"}), 400

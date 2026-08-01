@@ -21,8 +21,20 @@
       </div>
       <div class="flex flex-col gap-1">
         <label class="text-xs text-slate-500 uppercase tracking-wider">&nbsp;</label>
+        <button id="upload-csv-btn" class="bg-sky-500 hover:bg-sky-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          📤 Upload CSV
+        </button>
+      </div>
+      <div class="flex flex-col gap-1">
+        <label class="text-xs text-slate-500 uppercase tracking-wider">&nbsp;</label>
         <button id="reset-all-btn" class="bg-slate-600 hover:bg-slate-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
           Reset All
+        </button>
+      </div>
+      <div class="flex flex-col gap-1">
+        <label class="text-xs text-slate-500 uppercase tracking-wider">&nbsp;</label>
+        <button id="bulk-edit-btn" class="bg-purple-500 hover:bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors hidden">
+          ✏️ Bulk Edit
         </button>
       </div>
     </div>
@@ -44,6 +56,71 @@
     <div class="table-scroll">
       <div id="table-wrap" class="p-4" data-sync-days="14">
         <div class="spinner"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Hidden file input for CSV upload ── -->
+  <input type="file" id="csv-file-input" accept=".csv" class="hidden">
+
+  <!-- ── CSV Upload Modal ── -->
+  <div id="csv-upload-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-surface rounded-xl border border-slate-700 p-6 w-full max-w-lg mx-4">
+      <h2 class="text-lg font-bold text-slate-100 mb-4">Upload CSV Transactions</h2>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">CSV File</label>
+          <input type="file" id="csv-file-select" accept=".csv" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+        </div>
+        <div class="text-xs text-slate-400">
+          <p class="font-semibold text-slate-300 mb-2">Required CSV format (5 columns):</p>
+          <ul class="list-disc list-inside space-y-1">
+            <li>Date (MM/DD/YYYY or YYYY-MM-DD)</li>
+            <li>Account name</li>
+            <li>Description</li>
+            <li>Category</li>
+            <li>Amount (with or without $ sign, e.g., -45.50 or -$45.50)</li>
+          </ul>
+        </div>
+        <div id="csv-upload-status" class="text-sm text-slate-400 hidden"></div>
+      </div>
+      <div class="flex gap-3 justify-end pt-4">
+        <button type="button" id="cancel-csv-btn" class="px-4 py-2 rounded-lg text-sm font-medium text-slate-300 hover:text-slate-100 transition-colors">
+          Cancel
+        </button>
+        <button type="button" id="upload-csv-btn-modal" class="bg-sky-500 hover:bg-sky-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          Upload
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Bulk Edit Modal ── -->
+  <div id="bulk-edit-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-surface rounded-xl border border-slate-700 p-6 w-full max-w-lg mx-4">
+      <h2 class="text-lg font-bold text-slate-100 mb-4">Bulk Edit Filtered Transactions</h2>
+      <div class="space-y-4">
+        <div class="text-xs text-slate-400 mb-4">
+          <p class="font-semibold text-slate-300 mb-2">This will update <span id="bulk-edit-count">0</span> filtered transactions (manual only, older than 14 days)</p>
+          <p>Plaid transactions and recent manual transactions cannot be bulk edited.</p>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">New Category (optional)</label>
+          <input type="text" id="bulk-edit-category" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="Leave blank to keep current category">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">New Description (optional)</label>
+          <input type="text" id="bulk-edit-description" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="Leave blank to keep current description">
+        </div>
+        <div id="bulk-edit-status" class="text-sm text-slate-400 hidden"></div>
+      </div>
+      <div class="flex gap-3 justify-end pt-4">
+        <button type="button" id="cancel-bulk-edit-btn" class="px-4 py-2 rounded-lg text-sm font-medium text-slate-300 hover:text-slate-100 transition-colors">
+          Cancel
+        </button>
+        <button type="button" id="apply-bulk-edit-btn" class="bg-purple-500 hover:bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          Apply Changes
+        </button>
       </div>
     </div>
   </div>
@@ -217,6 +294,7 @@
 <script>
 let allTransactions = [];
 let filteredTransactions = [];
+let currentFilteredData = []; // Track currently displayed data for bulk operations
 let columnFilters = {}; // { column: { type, operator, value, value2 } }
 let columnSorts = {}; // { column: 'asc' | 'desc' | null }
 let currentFilterColumn = null;
@@ -277,7 +355,9 @@ if (urlParams.has('start_date') || urlParams.has('end_date') || urlParams.has('c
 
 // Event listeners
 document.getElementById('add-manual-btn').addEventListener('click', openManualModal);
+document.getElementById('upload-csv-btn').addEventListener('click', openCsvModal);
 document.getElementById('reset-all-btn').addEventListener('click', resetAll);
+document.getElementById('bulk-edit-btn').addEventListener('click', openBulkEditModal);
 document.getElementById('clear-all-filters-btn').addEventListener('click', clearAllFilters);
 document.getElementById('manual-form').addEventListener('submit', addManualTransaction);
 document.getElementById('cancel-manual-btn').addEventListener('click', closeManualModal);
@@ -293,6 +373,10 @@ document.getElementById('confirm-delete-btn').addEventListener('click', confirmD
 document.getElementById('delete-confirm-input').addEventListener('input', checkDeleteConfirm);
 document.getElementById('apply-column-filter-btn').addEventListener('click', applyColumnFilter);
 document.getElementById('clear-column-filter-btn').addEventListener('click', clearColumnFilter);
+document.getElementById('cancel-csv-btn').addEventListener('click', closeCsvModal);
+document.getElementById('upload-csv-btn-modal').addEventListener('click', uploadCsv);
+document.getElementById('cancel-bulk-edit-btn').addEventListener('click', closeBulkEditModal);
+document.getElementById('apply-bulk-edit-btn').addEventListener('click', applyBulkEdit);
 
 // Close filter menu when clicking outside
 document.addEventListener('click', (e) => {
@@ -658,6 +742,9 @@ function applyFiltersAndSorts() {
     });
   }
   
+  // Update currentFilteredData for bulk operations
+  currentFilteredData = [...filteredTransactions];
+  
   renderTable(filteredTransactions);
   saveState();
 }
@@ -665,14 +752,17 @@ function applyFiltersAndSorts() {
 function updateActiveFiltersDisplay() {
   const container = document.getElementById('active-filters');
   const list = document.getElementById('active-filters-list');
+  const bulkEditBtn = document.getElementById('bulk-edit-btn');
   
   const filters = Object.entries(columnFilters);
   if (filters.length === 0) {
     container.classList.add('hidden');
+    bulkEditBtn.classList.add('hidden');
     return;
   }
   
   container.classList.remove('hidden');
+  bulkEditBtn.classList.remove('hidden');
   
   list.innerHTML = filters.map(([column, filter]) => {
     const colDef = COLUMNS.find(c => c.key === column);
@@ -910,6 +1000,167 @@ function confirmDelete() {
   .catch(err => {
     alert('Failed to delete: ' + err.message);
   });
+}
+
+function openCsvModal() {
+  const modal = document.getElementById('csv-upload-modal');
+  document.getElementById('csv-file-select').value = '';
+  document.getElementById('csv-upload-status').classList.add('hidden');
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+}
+
+function closeCsvModal() {
+  const modal = document.getElementById('csv-upload-modal');
+  modal.classList.add('hidden');
+  modal.classList.remove('flex');
+}
+
+function uploadCsv() {
+  const fileInput = document.getElementById('csv-file-select');
+  const statusDiv = document.getElementById('csv-upload-status');
+  
+  if (!fileInput.files || fileInput.files.length === 0) {
+    alert('Please select a CSV file');
+    return;
+  }
+  
+  const file = fileInput.files[0];
+  const formData = new FormData();
+  formData.append('csv_file', file);
+  
+  statusDiv.classList.remove('hidden');
+  statusDiv.textContent = 'Uploading...';
+  
+  fetch('/api/manual/csv-upload', {
+    method: 'POST',
+    body: formData
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      statusDiv.textContent = `Successfully uploaded ${data.count} transactions`;
+      statusDiv.classList.remove('text-slate-400');
+      statusDiv.classList.add('text-emerald-400');
+      setTimeout(() => {
+        closeCsvModal();
+        loadTransactions();
+      }, 1500);
+    } else {
+      statusDiv.textContent = 'Upload failed: ' + (data.error || 'Unknown error');
+      statusDiv.classList.remove('text-slate-400');
+      statusDiv.classList.add('text-red-400');
+    }
+  })
+  .catch(err => {
+    statusDiv.textContent = 'Upload failed: ' + err.message;
+    statusDiv.classList.remove('text-slate-400');
+    statusDiv.classList.add('text-red-400');
+  });
+}
+
+function openBulkEditModal() {
+  const modal = document.getElementById('bulk-edit-modal');
+  const countSpan = document.getElementById('bulk-edit-count');
+  const statusDiv = document.getElementById('bulk-edit-status');
+  
+  // Count eligible transactions (manual, older than 14 days)
+  const fourteenDaysAgo = new Date();
+  fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
+  
+  const eligibleTransactions = currentFilteredData.filter(t => {
+    if (!t.transaction_id || !t.transaction_id.startsWith('manual_')) return false;
+    const transactionDate = new Date(t.Date);
+    return transactionDate < fourteenDaysAgo;
+  });
+  
+  countSpan.textContent = eligibleTransactions.length;
+  
+  if (eligibleTransactions.length === 0) {
+    alert('No eligible transactions for bulk edit. Only manual transactions older than 14 days can be bulk edited.');
+    return;
+  }
+  
+  document.getElementById('bulk-edit-category').value = '';
+  document.getElementById('bulk-edit-description').value = '';
+  statusDiv.classList.add('hidden');
+  
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+}
+
+function closeBulkEditModal() {
+  const modal = document.getElementById('bulk-edit-modal');
+  modal.classList.add('hidden');
+  modal.classList.remove('flex');
+}
+
+function applyBulkEdit() {
+  const category = document.getElementById('bulk-edit-category').value.trim();
+  const description = document.getElementById('bulk-edit-description').value.trim();
+  const statusDiv = document.getElementById('bulk-edit-status');
+  
+  if (!category && !description) {
+    alert('Please enter a new category or description');
+    return;
+  }
+  
+  // Find eligible transactions
+  const fourteenDaysAgo = new Date();
+  fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
+  
+  const eligibleTransactions = currentFilteredData.filter(t => {
+    if (!t.transaction_id || !t.transaction_id.startsWith('manual_')) return false;
+    const transactionDate = new Date(t.Date);
+    return transactionDate < fourteenDaysAgo;
+  });
+  
+  statusDiv.classList.remove('hidden');
+  statusDiv.textContent = 'Updating transactions...';
+  
+  const updates = eligibleTransactions.map(t => {
+    const updateData = {
+      transaction_id: t.transaction_id,
+      date: t.Date,
+      account: t.Account,
+      amount: t.Amount
+    };
+    
+    if (category) updateData.category = category;
+    if (description) updateData.description = description;
+    
+    return fetch('/api/manual/transaction', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updateData)
+    });
+  });
+  
+  Promise.all(updates)
+    .then(responses => Promise.all(responses.map(r => r.json())))
+    .then(results => {
+      const successCount = results.filter(r => r.success).length;
+      const errorCount = results.filter(r => !r.success).length;
+      
+      if (errorCount === 0) {
+        statusDiv.textContent = `Successfully updated ${successCount} transactions`;
+        statusDiv.classList.remove('text-slate-400');
+        statusDiv.classList.add('text-emerald-400');
+        setTimeout(() => {
+          closeBulkEditModal();
+          loadTransactions();
+        }, 1500);
+      } else {
+        statusDiv.textContent = `Updated ${successCount} transactions, ${errorCount} failed`;
+        statusDiv.classList.remove('text-slate-400');
+        statusDiv.classList.add('text-red-400');
+      }
+    })
+    .catch(err => {
+      statusDiv.textContent = 'Bulk edit failed: ' + err.message;
+      statusDiv.classList.remove('text-slate-400');
+      statusDiv.classList.add('text-red-400');
+    });
 }
 
 function confirmExclude() {

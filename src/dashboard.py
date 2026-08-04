@@ -169,9 +169,15 @@ def _rolling_month_range() -> tuple[str, str]:
     return start_date, end_date
 
 
-def _spend_pivot(start_month: str, end_month: str) -> dict:
+def _spend_pivot(start_month: str, end_month: str, account_filters: list[str] = None, institution_filters: list[str] = None) -> dict:
     """
     Build a pivot of monthly spend by category (including manual transactions).
+
+    Args:
+        start_month: Start month in YYYY-MM format
+        end_month: End month in YYYY-MM format
+        account_filters: Optional list of account names to filter by (uses account column)
+        institution_filters: Optional list of institution names to filter by (uses institution column)
 
     Returns:
         months         — ordered list of YYYY-MM strings in range
@@ -180,8 +186,39 @@ def _spend_pivot(start_month: str, end_month: str) -> dict:
                          sorted by average (spending first, income last)
         net_row        — {monthly: {YYYY-MM: float}, average: float}
     """
+    # Build query with optional account and institution filters
+    conditions_transactions = []
+    conditions_manual = []
+    params_transactions = [start_month, end_month]
+    params_manual = [start_month, end_month]
+
+    # Account filters (uses account column for both tables)
+    if account_filters and len(account_filters) > 0:
+        account_placeholders = ','.join(['?' for _ in account_filters])
+        conditions_transactions.append(f"account IN ({account_placeholders})")
+        conditions_manual.append(f"account IN ({account_placeholders})")
+        params_transactions.extend(account_filters)
+        params_manual.extend(account_filters)
+
+    # Institution filters (uses institution column for transactions table only)
+    if institution_filters and len(institution_filters) > 0:
+        institution_placeholders = ','.join(['?' for _ in institution_filters])
+        conditions_transactions.append(f"institution IN ({institution_placeholders})")
+        params_transactions.extend(institution_filters)
+
+    # Build WHERE clauses
+    if conditions_transactions:
+        where_clause_transactions = "AND (" + " AND ".join(conditions_transactions) + ")"
+    else:
+        where_clause_transactions = ""
+
+    if conditions_manual:
+        where_clause_manual = "AND (" + " AND ".join(conditions_manual) + ")"
+    else:
+        where_clause_manual = ""
+    
     raw = _rows(
-        """
+        f"""
         WITH combined_transactions AS (
             SELECT
                 strftime('%Y-%m', date)                                            AS month,
@@ -192,15 +229,17 @@ def _spend_pivot(start_month: str, end_month: str) -> dict:
             WHERE excluded = 0
               AND pending  = 0
               AND strftime('%Y-%m', date) BETWEEN ? AND ?
-            
+              {where_clause_transactions}
+
             UNION ALL
-            
+
             SELECT
                 strftime('%Y-%m', date)                                            AS month,
                 COALESCE(category, 'Uncategorized')                                 AS category,
                 amount                                                            AS amount
             FROM manual_transactions
             WHERE strftime('%Y-%m', date) BETWEEN ? AND ?
+              {where_clause_manual}
         )
         SELECT
             month,
@@ -209,7 +248,7 @@ def _spend_pivot(start_month: str, end_month: str) -> dict:
         FROM combined_transactions
         GROUP BY 1, 2
         """,
-        (start_month, end_month, start_month, end_month),
+        params_transactions + params_manual,
     )
 
     # Build sorted month list
@@ -809,8 +848,65 @@ def api_spend_monthly():
     earliest, latest = _date_range_bounds()
     start = request.args.get("start", earliest)
     end = request.args.get("end", latest)
-    pivot = _spend_pivot(start, end)
+
+    # Handle multiple account filters from query parameters
+    account_filters = request.args.getlist("account")
+    if account_filters:
+        account_filters = [a for a in account_filters if a]  # Filter out empty strings
+
+    # Handle multiple institution filters from query parameters
+    institution_filters = request.args.getlist("institution")
+    if institution_filters:
+        institution_filters = [i for i in institution_filters if i]  # Filter out empty strings
+
+    pivot = _spend_pivot(start, end,
+                        account_filters if account_filters else None,
+                        institution_filters if institution_filters else None)
     return jsonify(pivot)
+
+
+@app.route("/api/accounts")
+def api_accounts():
+    """Get list of unique account names for filtering (using account column)."""
+    try:
+        accounts = _rows(
+            """
+            SELECT account AS account_name FROM transactions
+            WHERE excluded = 0 AND pending = 0 AND account IS NOT NULL AND account != ''
+
+            UNION
+
+            SELECT account AS account_name FROM manual_transactions
+            WHERE account IS NOT NULL AND account != ''
+            ORDER BY account_name
+            """
+        )
+        result = [a["account_name"] for a in accounts if a["account_name"]]
+        logger.info(f"Returning {len(result)} accounts: {result}")
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error getting accounts: {e}")
+        return jsonify([])
+
+
+@app.route("/api/institutions")
+def api_institutions():
+    """Get list of unique institution names for filtering."""
+    try:
+        institutions = _rows(
+            """
+            SELECT DISTINCT institution AS institution_name
+            FROM transactions
+            WHERE excluded = 0 AND pending = 0 AND institution IS NOT NULL AND institution != ''
+            ORDER BY institution_name
+            """
+        )
+        result = [i["institution_name"] for i in institutions if i["institution_name"]]
+        logger.info(f"Returning {len(result)} institutions: {result}")
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error getting institutions: {e}")
+        return jsonify([])
 
 
 @app.route("/api/networth/current")

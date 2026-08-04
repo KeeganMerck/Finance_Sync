@@ -51,6 +51,20 @@
     </div>
   </div>
 
+  <!-- ── Total Net Summary ── -->
+  <div id="total-net-summary" class="bg-surface rounded-xl border border-slate-700 p-4 hidden">
+    <div class="flex items-center justify-between">
+      <div>
+        <h3 class="text-sm font-semibold text-slate-100">Total Net (Filtered)</h3>
+        <p class="text-xs text-slate-500 mt-1">Sum of currently displayed transactions</p>
+      </div>
+      <div class="text-right">
+        <p id="total-net-amount" class="text-2xl font-bold text-slate-100">$0.00</p>
+        <p id="total-net-count" class="text-xs text-slate-500 mt-1">0 transactions</p>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Transactions table ── -->
   <div class="bg-surface rounded-xl border border-slate-700">
     <div class="table-scroll">
@@ -482,6 +496,21 @@ function renderTable(transactions) {
     <p class="text-xs text-slate-500 mt-4">
       Showing ${transactions.length} of ${allTransactions.length} transactions. Edit button available for transactions older than ${SYNC_DAYS} days or manual transactions.
     </p>`;
+  
+  // Calculate and display total net summary
+  const totalNet = transactions.reduce((sum, t) => sum + (t.Amount || 0), 0);
+  const summaryDiv = document.getElementById('total-net-summary');
+  const amountEl = document.getElementById('total-net-amount');
+  const countEl = document.getElementById('total-net-count');
+  
+  if (transactions.length > 0) {
+    summaryDiv.classList.remove('hidden');
+    amountEl.textContent = fmtAmt(totalNet);
+    amountEl.className = `text-2xl font-bold ${totalNet >= 0 ? 'text-emerald-400' : 'text-red-400'}`;
+    countEl.textContent = `${transactions.length} transaction${transactions.length !== 1 ? 's' : ''}`;
+  } else {
+    summaryDiv.classList.add('hidden');
+  }
   
   updateActiveFiltersDisplay();
 }

@@ -5,38 +5,90 @@
 <div class="space-y-8 fade-in">
 
   <!-- ── Header + filter bar ── -->
-  <div class="flex flex-col sm:flex-row sm:items-end gap-4">
-    <div>
+  <div class="flex flex-col lg:flex-row lg:items-start gap-6">
+    <div class="flex-1">
       <h1 class="text-2xl font-bold text-slate-100">Category Spend</h1>
       <p class="text-sm text-slate-400 mt-1">Monthly totals by category · excludes flagged transactions</p>
     </div>
 
-    <!-- Date range filter -->
-    <div class="sm:ml-auto flex flex-wrap items-end gap-3">
-      <div class="flex flex-col gap-1">
-        <label class="text-xs text-slate-500 uppercase tracking-wider">From</label>
-        <input id="filter-start" type="month"
-               value="{{ earliest }}" min="{{ earliest }}" max="{{ latest }}"
-               class="bg-surface border border-slate-600 rounded-lg px-3 py-2 text-sm
-                      text-slate-100 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500" />
+    <!-- Filter section on the right -->
+    <div class="flex flex-col gap-3 lg:w-auto">
+      <!-- Row 1: Date range filter -->
+      <div class="flex flex-wrap items-end gap-3">
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-slate-500 uppercase tracking-wider">From</label>
+          <input id="filter-start" type="month"
+                 value="{{ earliest }}" min="{{ earliest }}" max="{{ latest }}"
+                 class="bg-surface border border-slate-600 rounded-lg px-3 py-2 text-sm
+                        text-slate-100 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500" />
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-slate-500 uppercase tracking-wider">To</label>
+          <input id="filter-end" type="month"
+                 value="{{ latest }}" min="{{ earliest }}" max="{{ latest }}"
+                 class="bg-surface border border-slate-600 rounded-lg px-3 py-2 text-sm
+                        text-slate-100 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500" />
+        </div>
       </div>
-      <div class="flex flex-col gap-1">
-        <label class="text-xs text-slate-500 uppercase tracking-wider">To</label>
-        <input id="filter-end" type="month"
-               value="{{ latest }}" min="{{ earliest }}" max="{{ latest }}"
-               class="bg-surface border border-slate-600 rounded-lg px-3 py-2 text-sm
-                      text-slate-100 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500" />
+
+      <!-- Row 2: Account and Institution filters -->
+      <div class="flex flex-wrap gap-4">
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-slate-500 uppercase tracking-wider">Account</label>
+          <div class="relative">
+            <button id="account-filter-btn" class="w-56 bg-surface border border-slate-600 rounded-lg px-3 py-2 text-sm
+                        text-slate-100 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 text-left">
+              Loading...
+            </button>
+            <div id="account-filter-dropdown" class="absolute top-full left-0 mt-1 w-72 bg-surface border border-slate-600 rounded-lg shadow-xl z-50 hidden max-h-60 overflow-y-auto">
+              <div class="p-2">
+                <label class="flex items-center gap-2 p-2 hover:bg-slate-700 rounded cursor-pointer">
+                  <input type="checkbox" id="account-all" checked class="rounded">
+                  <span class="text-sm text-slate-200">All Accounts</span>
+                </label>
+                <div id="account-checkboxes" class="space-y-1 mt-2 pt-2 border-t border-slate-600">
+                  <!-- Account checkboxes will be loaded here -->
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-slate-500 uppercase tracking-wider">Institution</label>
+          <div class="relative">
+            <button id="institution-filter-btn" class="w-56 bg-surface border border-slate-600 rounded-lg px-3 py-2 text-sm
+                        text-slate-100 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 text-left">
+              Loading...
+            </button>
+            <div id="institution-filter-dropdown" class="absolute top-full left-0 mt-1 w-72 bg-surface border border-slate-600 rounded-lg shadow-xl z-50 hidden max-h-60 overflow-y-auto">
+              <div class="p-2">
+                <label class="flex items-center gap-2 p-2 hover:bg-slate-700 rounded cursor-pointer">
+                  <input type="checkbox" id="institution-all" checked class="rounded">
+                  <span class="text-sm text-slate-200">All Institutions</span>
+                </label>
+                <div id="institution-checkboxes" class="space-y-1 mt-2 pt-2 border-t border-slate-600">
+                  <!-- Institution checkboxes will be loaded here -->
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
-      <button id="btn-apply"
+
+      <!-- Row 3: Apply and Reset buttons -->
+      <div class="flex gap-2">
+        <button id="btn-apply"
               class="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-sm font-medium
                      rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500">
-        Apply
-      </button>
-      <button id="btn-reset"
+          Apply
+        </button>
+        <button id="btn-reset"
               class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm font-medium
                      rounded-lg transition-colors focus:outline-none">
-        Reset
-      </button>
+          Reset
+        </button>
+      </div>
     </div>
   </div>
 
@@ -76,6 +128,10 @@
 <script>
 let currentData = null;
 let avgChart = null;
+let availableAccounts = [];
+let selectedAccounts = [];
+let availableInstitutions = [];
+let selectedInstitutions = [];
 
 const EARLIEST = '{{ earliest }}';
 const LATEST   = '{{ latest }}';
@@ -100,7 +156,23 @@ function load() {
   document.getElementById('pivot-wrap').innerHTML = '<div class="spinner"></div>';
   document.getElementById('spend-chips').innerHTML = '';
 
-  fetch(`/api/spend/monthly?start=${start}&end=${end}`)
+  let url = `/api/spend/monthly?start=${start}&end=${end}`;
+
+  // Add account filters (if specific accounts selected)
+  if (selectedAccounts.length > 0) {
+    selectedAccounts.forEach(account => {
+      url += `&account=${encodeURIComponent(account)}`;
+    });
+  }
+
+  // Add institution filters (if specific institutions selected)
+  if (selectedInstitutions.length > 0) {
+    selectedInstitutions.forEach(institution => {
+      url += `&institution=${encodeURIComponent(institution)}`;
+    });
+  }
+
+  fetch(url)
     .then(r => r.json())
     .then(data => {
       currentData = data;
@@ -137,6 +209,33 @@ function renderChips(data) {
   `).join('');
 }
 
+/* ─── Sort by month ───────────────────────────────────────────────── */
+let currentSortMonth = null;
+let currentSortDirection = 'desc';
+
+function sortByMonth(month) {
+  if (!currentData || !currentData.rows) return;
+  
+  // Toggle direction if clicking same month
+  if (currentSortMonth === month) {
+    currentSortDirection = currentSortDirection === 'desc' ? 'asc' : 'desc';
+  } else {
+    currentSortMonth = month;
+    currentSortDirection = 'desc';
+  }
+  
+  // Sort rows by the selected month's value
+  const sortedRows = [...currentData.rows].sort((a, b) => {
+    const aVal = a.monthly[month] ?? 0;
+    const bVal = b.monthly[month] ?? 0;
+    return currentSortDirection === 'desc' ? bVal - aVal : aVal - bVal;
+  });
+  
+  // Re-render with sorted rows
+  currentData.rows = sortedRows;
+  renderTable(currentData);
+}
+
 /* ─── Pivot table ───────────────────────────────────────────────── */
 function renderTable(data) {
   const { months, complete_months, rows, net_row } = data;
@@ -168,8 +267,9 @@ function renderTable(data) {
   // Header
   const thMonths = months.map(m => {
     const partial = isCurrentMonth(m);
-    return `<th class="bg-surface text-right text-xs px-3 py-2.5 font-medium whitespace-nowrap border-b border-slate-700
-                   ${partial ? 'text-amber-400' : 'text-slate-400'}">
+    return `<th class="bg-surface text-right text-xs px-3 py-2.5 font-medium whitespace-nowrap border-b border-slate-700 cursor-pointer hover:text-sky-400 hover:underline"
+                   ${partial ? 'text-amber-400' : 'text-slate-400'}"
+                   onclick="sortByMonth('${m}')">
       ${mLabel(m)}${partial ? ' *' : ''}
     </th>`;
   }).join('');
@@ -249,7 +349,7 @@ function renderChart(data) {
   const visible = rows.filter(r => Math.abs(r.average) > 0.01);
   const labels  = visible.map(r => r.category);
   const values  = visible.map(r => r.average);
-  const colors  = values.map(v => v > 0 ? 'rgba(248,113,113,0.75)' : 'rgba(74,222,128,0.75)');
+  const colors  = values.map(v => v < 0 ? 'rgba(248,113,113,0.75)' : 'rgba(74,222,128,0.75)');
 
   if (avgChart) avgChart.destroy();
   avgChart = new Chart(canvas, {
@@ -292,12 +392,244 @@ document.getElementById('btn-apply').addEventListener('click', load);
 document.getElementById('btn-reset').addEventListener('click', () => {
   document.getElementById('filter-start').value = EARLIEST;
   document.getElementById('filter-end').value   = LATEST;
+  selectedAccounts = [];
+  selectedInstitutions = [];
+  updateInstitutionFilterButton();
   load();
 });
+document.getElementById('account-filter-btn').addEventListener('click', toggleAccountDropdown);
+document.getElementById('institution-filter-btn').addEventListener('click', toggleInstitutionDropdown);
+document.getElementById('account-all').addEventListener('change', toggleAllAccounts);
+document.getElementById('institution-all').addEventListener('change', toggleAllInstitutions);
 // Also allow pressing Enter in either field
 ['filter-start','filter-end'].forEach(id =>
   document.getElementById(id).addEventListener('change', load)
 );
+
+// Load accounts for dropdown
+fetch('/api/accounts')
+  .then(r => r.json())
+  .then(accounts => {
+    console.log('Loaded accounts:', accounts);
+    availableAccounts = accounts;
+    const checkboxesDiv = document.getElementById('account-checkboxes');
+    checkboxesDiv.innerHTML = '';
+
+    if (accounts.length === 0) {
+      checkboxesDiv.innerHTML = '<p class="text-slate-500 text-sm p-2">No accounts found</p>';
+      return;
+    }
+
+    accounts.forEach(account => {
+      const label = document.createElement('label');
+      label.className = 'flex items-center gap-2 p-2 hover:bg-slate-700 rounded cursor-pointer';
+      label.innerHTML = `
+        <input type="checkbox" class="account-checkbox rounded" value="${account}">
+        <span class="text-sm text-slate-200">${account}</span>
+      `;
+      label.querySelector('input').addEventListener('change', onAccountChange);
+      checkboxesDiv.appendChild(label);
+    });
+
+    console.log('Created', accounts.length, 'account checkboxes');
+    updateAccountFilterButton();
+  })
+  .catch(err => {
+    console.error('Failed to load accounts:', err);
+  });
+
+// Load institutions for dropdown
+fetch('/api/institutions')
+  .then(r => r.json())
+  .then(institutions => {
+    console.log('Loaded institutions:', institutions);
+    availableInstitutions = institutions;
+    const checkboxesDiv = document.getElementById('institution-checkboxes');
+    checkboxesDiv.innerHTML = '';
+
+    if (institutions.length === 0) {
+      checkboxesDiv.innerHTML = '<p class="text-slate-500 text-sm p-2">No institutions found</p>';
+      return;
+    }
+
+    institutions.forEach(institution => {
+      const label = document.createElement('label');
+      label.className = 'flex items-center gap-2 p-2 hover:bg-slate-700 rounded cursor-pointer';
+      label.innerHTML = `
+        <input type="checkbox" class="institution-checkbox rounded" value="${institution}">
+        <span class="text-sm text-slate-200">${institution}</span>
+      `;
+      label.querySelector('input').addEventListener('change', onInstitutionChange);
+      checkboxesDiv.appendChild(label);
+    });
+
+    console.log('Created', institutions.length, 'institution checkboxes');
+    updateInstitutionFilterButton();
+  })
+  .catch(err => {
+    console.error('Failed to load institutions:', err);
+  });
+
+// Close dropdowns when clicking outside
+document.addEventListener('click', (e) => {
+  const accountDropdown = document.getElementById('account-filter-dropdown');
+  const accountBtn = document.getElementById('account-filter-btn');
+  if (!accountDropdown.contains(e.target) && !accountBtn.contains(e.target)) {
+    accountDropdown.classList.add('hidden');
+  }
+
+  const institutionDropdown = document.getElementById('institution-filter-dropdown');
+  const institutionBtn = document.getElementById('institution-filter-btn');
+  if (!institutionDropdown.contains(e.target) && !institutionBtn.contains(e.target)) {
+    institutionDropdown.classList.add('hidden');
+  }
+});
+
+function toggleAccountDropdown() {
+  const dropdown = document.getElementById('account-filter-dropdown');
+  dropdown.classList.toggle('hidden');
+}
+
+function toggleAllAccounts(e) {
+  const checked = e.target.checked;
+  document.querySelectorAll('.account-checkbox').forEach(cb => {
+    cb.checked = checked;
+  });
+
+  // Clear institution filter when account filter is applied
+  selectedInstitutions = [];
+  document.getElementById('institution-all').checked = true;
+  document.querySelectorAll('.institution-checkbox').forEach(cb => {
+    cb.checked = false;
+  });
+
+  if (checked) {
+    selectedAccounts = [...availableAccounts];
+  } else {
+    selectedAccounts = [];
+  }
+
+  updateAccountFilterButton();
+  updateInstitutionFilterButton();
+  load();
+}
+
+function onAccountChange(e) {
+  const account = e.target.value;
+  const allCheckbox = document.getElementById('account-all');
+
+  // Clear institution filter when account filter is applied
+  selectedInstitutions = [];
+  document.getElementById('institution-all').checked = true;
+  document.querySelectorAll('.institution-checkbox').forEach(cb => {
+    cb.checked = false;
+  });
+
+  if (e.target.checked) {
+    selectedAccounts.push(account);
+  } else {
+    selectedAccounts = selectedAccounts.filter(a => a !== account);
+  }
+
+  // Update "All Accounts" checkbox state
+  allCheckbox.checked = selectedAccounts.length === availableAccounts.length;
+
+  updateAccountFilterButton();
+  updateInstitutionFilterButton();
+  load();
+}
+
+function toggleInstitutionDropdown() {
+  const dropdown = document.getElementById('institution-filter-dropdown');
+  dropdown.classList.toggle('hidden');
+}
+
+function toggleAllInstitutions(e) {
+  const checked = e.target.checked;
+  document.querySelectorAll('.institution-checkbox').forEach(cb => {
+    cb.checked = checked;
+  });
+
+  // Clear account filter when institution filter is applied
+  selectedAccounts = [];
+  document.getElementById('account-all').checked = true;
+  document.querySelectorAll('.account-checkbox').forEach(cb => {
+    cb.checked = false;
+  });
+
+  if (checked) {
+    selectedInstitutions = [...availableInstitutions];
+  } else {
+    selectedInstitutions = [];
+  }
+
+  updateAccountFilterButton();
+  updateInstitutionFilterButton();
+  load();
+}
+
+function onInstitutionChange(e) {
+  const institution = e.target.value;
+  const allCheckbox = document.getElementById('institution-all');
+
+  // Clear account filter when institution filter is applied
+  selectedAccounts = [];
+  document.getElementById('account-all').checked = true;
+  document.querySelectorAll('.account-checkbox').forEach(cb => {
+    cb.checked = false;
+  });
+
+  if (e.target.checked) {
+    selectedInstitutions.push(institution);
+  } else {
+    selectedInstitutions = selectedInstitutions.filter(i => i !== institution);
+  }
+
+  // Update "All Institutions" checkbox state
+  allCheckbox.checked = selectedInstitutions.length === availableInstitutions.length;
+
+  updateAccountFilterButton();
+  updateInstitutionFilterButton();
+  load();
+}
+
+function updateAccountFilterButton() {
+  const btn = document.getElementById('account-filter-btn');
+  const allCheckbox = document.getElementById('account-all');
+
+  if (selectedAccounts.length === 0) {
+    btn.textContent = 'All Accounts';
+    allCheckbox.checked = true;
+  } else if (selectedAccounts.length === availableAccounts.length) {
+    btn.textContent = 'All Accounts';
+    allCheckbox.checked = true;
+  } else if (selectedAccounts.length === 1) {
+    btn.textContent = selectedAccounts[0];
+    allCheckbox.checked = false;
+  } else {
+    btn.textContent = `${selectedAccounts.length} of ${availableAccounts.length} accounts`;
+    allCheckbox.checked = false;
+  }
+}
+
+function updateInstitutionFilterButton() {
+  const btn = document.getElementById('institution-filter-btn');
+  const allCheckbox = document.getElementById('institution-all');
+
+  if (selectedInstitutions.length === 0) {
+    btn.textContent = 'All Institutions';
+    allCheckbox.checked = true;
+  } else if (selectedInstitutions.length === availableInstitutions.length) {
+    btn.textContent = 'All Institutions';
+    allCheckbox.checked = true;
+  } else if (selectedInstitutions.length === 1) {
+    btn.textContent = selectedInstitutions[0];
+    allCheckbox.checked = false;
+  } else {
+    btn.textContent = `${selectedInstitutions.length} of ${availableInstitutions.length} institutions`;
+    allCheckbox.checked = false;
+  }
+}
 
 load();
 </script>

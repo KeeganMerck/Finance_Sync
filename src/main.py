@@ -228,9 +228,9 @@ def run_pipeline(enable_sheets: bool = True) -> None:
         logger.info("Refreshing Google Sheets table...")
         try:
             if not DRY_RUN and GOOGLE_SHEETS_ENABLED:
-                # Use the already-categorized transactions instead of fetching from DB
-                # This ensures excluded transactions are filtered out
-                sheet_rows = update_google_sheet(transactions)
+                # Use get_all_transactions() to export ALL historical data from database
+                # This ensures the full transaction history is uploaded to Google Sheets
+                sheet_rows = update_google_sheet()
                 logger.info(f"  Updated Google Sheets with {sheet_rows} row(s).")
             elif DRY_RUN:
                 logger.info("  Dry run enabled — skipping Google Sheets update.")

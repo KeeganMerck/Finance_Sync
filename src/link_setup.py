@@ -589,10 +589,12 @@ def generate_all_update_link_tokens():
                         language='en',
                         country_codes=[CountryCode('US')],
                         access_token=existing_access_token,
-                        additional_consented_products=[Products('transactions')],
+                        additional_consented_products=[
+                            Products('transactions'),
+                            Products('investments'),  # Add investments to additional consent for updates
+                        ],
                         transactions={"days_requested": 730},
                         optional_products=[
-                            Products('investments'),
                             Products('liabilities'),
                             Products('identity'),
                         ],
@@ -687,10 +689,12 @@ def generate_update_link_token():
             language='en',
             country_codes=[CountryCode('US')],
             access_token=existing_access_token,
-            additional_consented_products=[Products('transactions')],
+            additional_consented_products=[
+                Products('transactions'),
+                Products('investments'),  # Add investments to additional consent for updates
+            ],
             transactions={"days_requested": 730},
             optional_products=[
-                Products('investments'),
                 Products('liabilities'),
                 Products('identity'),
                 Products('signal'),

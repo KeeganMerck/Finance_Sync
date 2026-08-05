@@ -40,12 +40,11 @@ from typing import Any
 from flask import Flask, Response, jsonify, render_template, request
 
 # ── Config ────────────────────────────────────────────────────────────────────
-from .core.config import DATABASE_PATH
-from .core.config import ROLLING_SYNC_DAYS
+from .core.config import DATABASE_PATH, ROLLING_SYNC_DAYS, DASHBOARD_PORT
+from .modules.database import get_investment_holdings
 
 _HERE = Path(__file__).resolve().parent
 # Port 5000 is required for Replit's webview; override with DASHBOARD_PORT locally
-DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", 5000))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1033,6 +1032,119 @@ def api_networth_daily():
     return jsonify(result)
 
 
+@app.route("/api/investments")
+def api_investments():
+    """Get detailed investment holdings breakdown with summary metrics."""
+    try:
+        from .core.config import ENABLE_DATABASE
+        
+        logger.info(f"DATABASE_PATH: {DATABASE_PATH}")
+        logger.info(f"Database exists: {DATABASE_PATH.exists()}")
+        logger.info(f"ENABLE_DATABASE: {ENABLE_DATABASE}")
+        
+        holdings = get_investment_holdings()
+        logger.info(f"Retrieved {len(holdings)} investment holdings from database")
+        
+        # Calculate summary metrics with None handling
+        total_value = sum(h.get('current_value') or 0 for h in holdings)
+        total_cost = sum(h.get('cost_basis') or 0 for h in holdings)
+        total_gain = total_value - total_cost
+        total_gain_percent = (total_gain / total_cost * 100) if total_cost > 0 else 0
+        
+        # Group by institution
+        by_institution = {}
+        for h in holdings:
+            inst = h.get('institution') or 'Unknown'
+            if inst not in by_institution:
+                by_institution[inst] = {'value': 0, 'cost': 0, 'count': 0}
+            by_institution[inst]['value'] += h.get('current_value') or 0
+            by_institution[inst]['cost'] += h.get('cost_basis') or 0
+            by_institution[inst]['count'] += 1
+        
+        # Calculate gains per institution
+        for inst in by_institution:
+            by_institution[inst]['gain'] = by_institution[inst]['value'] - by_institution[inst]['cost']
+            by_institution[inst]['gain_percent'] = (
+                (by_institution[inst]['gain'] / by_institution[inst]['cost'] * 100) 
+                if by_institution[inst]['cost'] > 0 else 0
+            )
+        
+        return jsonify({
+            'holdings': holdings,
+            'summary': {
+                'total_value': total_value,
+                'total_cost': total_cost,
+                'total_gain': total_gain,
+                'total_gain_percent': total_gain_percent,
+                'total_holdings': len(holdings)
+            },
+            'by_institution': by_institution
+        })
+    except Exception as e:
+        logger.exception("Failed to fetch investment holdings")
+        # Return empty data on error to prevent UI breaking
+        return jsonify({
+            'holdings': [],
+            'summary': {
+                'total_value': 0,
+                'total_cost': 0,
+                'total_gain': 0,
+                'total_gain_percent': 0,
+                'total_holdings': 0
+            },
+            'by_institution': {}
+        })
+
+
+@app.route("/api/investments/performance")
+def api_investments_performance():
+    """Get investment performance history over time."""
+    lookback_days = int(request.args.get("days", 90))
+    
+    rows = _rows(
+        """
+        SELECT 
+            snapshot_date,
+            institution,
+            SUM(current_value) as total_value,
+            SUM(cost_basis) as total_cost,
+            SUM(current_value - cost_basis) as total_gain,
+            CASE WHEN SUM(cost_basis) > 0 
+                THEN (SUM(current_value - cost_basis) / SUM(cost_basis)) * 100 
+                ELSE 0 END as gain_percent
+        FROM investment_holdings
+        WHERE snapshot_date >= date('now', '-' || ? || ' days')
+        GROUP BY snapshot_date, institution
+        ORDER BY snapshot_date ASC
+        """,
+        (lookback_days,)
+    )
+    
+    # Also get overall performance by date
+    overall = _rows(
+        """
+        SELECT 
+            snapshot_date,
+            SUM(current_value) as total_value,
+            SUM(cost_basis) as total_cost,
+            SUM(current_value - cost_basis) as total_gain,
+            CASE WHEN SUM(cost_basis) > 0 
+                THEN (SUM(current_value - cost_basis) / SUM(cost_basis)) * 100 
+                ELSE 0 END as gain_percent
+        FROM investment_holdings
+        WHERE snapshot_date >= date('now', '-' || ? || ' days')
+        GROUP BY snapshot_date
+        ORDER BY snapshot_date ASC
+        """,
+        (lookback_days,)
+    )
+    
+    return jsonify({
+        'by_institution': rows,
+        'overall': overall
+    })
+
+
 @app.route("/api/transactions")
 def api_transactions():
     """Get transactions for the transactions view."""
@@ -1316,6 +1428,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Finance Sync Dashboard")
     parser.add_argument("--no-sync", action="store_true", 
                        help="Skip data sync and start dashboard with existing data")
+    parser.add_argument("--sync-transactions", action="store_true",
+                       help="Only sync transactions (skip investments)")
+    parser.add_argument("--sync-investments", action="store_true",
+                       help="Only sync investments (skip transactions)")
     args = parser.parse_args()
     
     # ── Run the sync pipeline first (unless --no-sync is specified) ─────────────────────
@@ -1327,8 +1443,22 @@ if __name__ == "__main__":
         print("  Finance Sync — Syncing data before dashboard start…")
         print("=" * 60 + "\n")
 
+        # Set environment variables for selective sync
+        import os
+        sync_transactions = True
+        sync_investments = True
+        
+        if args.sync_transactions:
+            sync_transactions = True
+            sync_investments = False
+            print("  Selective sync: Transactions only")
+        elif args.sync_investments:
+            sync_transactions = False
+            sync_investments = True
+            print("  Selective sync: Investments only")
+
         try:
-            run_pipeline(enable_sheets=False)
+            run_pipeline(enable_sheets=False, sync_transactions=sync_transactions, sync_investments=sync_investments)
         except SystemExit as exc:
             # run_pipeline calls sys.exit(1) on fatal pipeline errors.
             # We still want to start the dashboard so the user can see whatever

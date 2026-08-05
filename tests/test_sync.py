@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sync import normalize_transaction, load_transactions, fetch_transactions
 
-MOCK_JSON = Path(__file__).parent.parent / 'data' / 'mock_transactions.json'
+MOCK_JSON = Path(__file__).parent.parent.parent / 'src' / 'core' / 'data' / 'mock_transactions.json'
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────

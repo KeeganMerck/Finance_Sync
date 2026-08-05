@@ -25,7 +25,7 @@ Reference: https://plaid.com/docs/
 import logging
 import os
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 
 from ..core.config import (
     PLAID_ENV,
@@ -308,6 +308,76 @@ def get_transactions(
         raise
 
 
+def get_investments(access_token: str, profile: Optional[PlaidProfile] = None) -> list[dict]:
+    """
+    Fetch detailed investment holdings from Plaid for investment/brokerage accounts.
+
+    This function retrieves the complete holdings data including securities, positions,
+    and performance metrics for investment accounts.
+
+    Args:
+        access_token: Plaid access token for one institution.
+        profile: Optional PlaidProfile for multi-profile support.
+
+    Returns:
+        List of investment holding dicts with keys:
+            holding_id, account_id, institution, security_id, symbol, name,
+            quantity, current_price, current_value, cost_basis, purchase_date, last_updated
+    """
+    try:
+        # Use the correct Plaid SDK module name for holdings
+        from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
+        from datetime import datetime
+
+        client = get_plaid_client(profile)
+        
+        # Create request without options for simplicity
+        request = InvestmentsHoldingsGetRequest(access_token=access_token)
+        
+        response = client.investments_holdings_get(request)
+
+        holdings = []
+        securities = {s['security_id']: s for s in response['securities']}
+
+        for account in response['accounts']:
+            for holding in response['holdings']:
+                if holding['account_id'] == account['account_id']:
+                    security = securities.get(holding['security_id'], {})
+                    current_price = security.get('close_price', security.get('close_price'))
+                    quantity = holding.get('quantity', 0)
+                    current_value = quantity * current_price if current_price else 0
+                    cost_basis = holding.get('cost_basis', 0)
+
+                    # Generate unique holding_id based on account_id and security_id only
+                    # This allows proper upserting of the same holdings over time
+                    holding_id = f"{account['account_id']}_{holding['security_id']}"
+
+                    holdings.append({
+                        'holding_id': holding_id,
+                        'account_id': account['account_id'],
+                        'institution': profile.name if profile else 'PRIMARY',
+                        'security_id': holding['security_id'],
+                        'symbol': security.get('ticker_symbol', ''),
+                        'name': security.get('name', security.get('official_name', '')),
+                        'quantity': quantity or 0,
+                        'current_price': current_price or 0,
+                        'current_value': current_value or 0,
+                        'cost_basis': cost_basis or 0,
+                        'purchase_date': holding.get('purchase_date', ''),
+                        'last_updated': datetime.now().isoformat(),
+                        'snapshot_date': datetime.now().strftime('%Y-%m-%d')
+                    })
+
+        logger.info(f"Fetched {len(holdings)} investment holding(s) from Plaid.")
+        return holdings
+
+    except Exception as e:
+        logger.exception(f"Failed to fetch investments: {e}")
+        # Return empty list on error to avoid breaking the pipeline
+        logger.warning("Investments fetch failed, returning empty list.")
+        return []
+
+
 def get_incremental_transactions(
     access_token: str,
     since_date: date,
@@ -460,7 +530,10 @@ def create_link_token(
 
         # Build the core request with maximum data collection (reporting only, no money movement)
         request = LinkTokenCreateRequest(
-            products=[Products('transactions')],
+            products=[
+                Products('transactions'),
+                Products('investments'),  # Enable investment data access by default
+            ],
             client_name='Finance Sync',
             country_codes=[CountryCode('US')],
             language='en',
@@ -469,7 +542,6 @@ def create_link_token(
                 "days_requested": 730  # Forces the 24-month historical pull
             },
             optional_products=[
-                Products('investments'),        # Investment holdings and transactions
                 Products('liabilities'),        # Loan/credit data (interest rates, payments)
                 Products('identity'),           # User identity information
                 Products('signal'),             # Transaction scores/risk analysis

@@ -9,7 +9,7 @@ Personal finance aggregation and analytics platform. Pulls transactions from Pla
 ## Stack
 
 - **Language:** Python 3.10+
-- **Database:** SQLite (`data/finance.db`)
+- **Database:** SQLite (`src/core/data/finance.db`)
 - **Plaid SDK:** `plaid-python >= 14.0.0`
 - **Sheets:** `gspread` + `google-auth` (service account)
 - **Flask:** Standalone Plaid Link OAuth setup utility (`src/link_setup.py`)
@@ -33,11 +33,11 @@ mock JSON ───┘         │                    │                     �
                                                         balance.py
 ```
 
-1. **Ingestion** — `sync.py` fetches from Plaid or `data/mock_transactions.json`
+1. **Ingestion** — `sync.py` fetches from Plaid or `src/core/data/mock_transactions.json`
 2. **Normalization** — `normalization.py` strips asterisks, hash codes, trailing digits from merchant strings
-3. **Categorization** — `categorizer.py` applies `rules/category_rules.csv` (first-match-wins)
+3. **Categorization** — `categorizer.py` applies `src/core/rules/category_rules.csv` (first-match-wins)
 4. **Persistence** — `database.py` upserts to SQLite (idempotent via `INSERT OR REPLACE`)
-5. **Export** — `export.py` writes `cash_flow.csv` (active only) and `raw_transactions.csv` (all)
+5. **Export** — `export.py` writes `src/core/data/cash_flow.csv` (active only) and `src/core/data/raw_transactions.csv` (all)
 6. **Sheets** — `google_sheets.py` rewrites "Cash Flow Table"; `balance.py` writes "Account Balances" and "Net Worth History"
 
 ---
@@ -98,7 +98,7 @@ src/
 
 ---
 
-## Rules System (`rules/category_rules.csv`)
+## Rules System (`src/core/rules/category_rules.csv`)
 
 | Column | Purpose |
 |---|---|
@@ -153,7 +153,7 @@ GOOGLE_SHEETS_ID=...
 GOOGLE_SHEETS_CREDENTIALS_PATH=path/to/creds.json
 ```
 
-The `.env` file and `data/` directory are gitignored — never commit them.
+The `.env` file and `src/core/data/` directory are gitignored — never commit them.
 
 ---
 

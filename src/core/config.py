@@ -58,8 +58,11 @@ RULES_CSV_PATH = RULES_DIR / 'category_rules.csv'
 # Sync log file
 LOG_PATH = LOGS_DIR / 'sync.log'
 
+# Dashboard settings
+DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", 5000))
+
 # Google Sheets export settings
-GOOGLE_SHEETS_CREDENTIALS_PATH = Path(__file__).parent.parent.parent.resolve() / 'google_credentials.json'
+GOOGLE_SHEETS_CREDENTIALS_PATH = PROJECT_ROOT / 'google_credentials.json'
 GOOGLE_SHEETS_SPREADSHEET_NAME = 'PLAID - K&D Cash Flow'
 GOOGLE_SHEETS_WORKSHEET_NAME = 'Cash Flow Table'
 GOOGLE_SHEETS_ENABLED: bool = os.getenv('GOOGLE_SHEETS_ENABLED', 'true').lower() == 'true'
@@ -77,6 +80,10 @@ DRY_RUN: bool = False
 # When True, requires Plaid credentials (PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENV)
 # and at least one PLAID_{ENV}_TOKEN_* environment variable (obtained via link_setup.py).
 USE_PLAID: bool = os.getenv('USE_PLAID', 'false').lower() == 'true'
+
+# Sync flags for selective pipeline execution
+SYNC_TRANSACTIONS: bool = os.getenv('SYNC_TRANSACTIONS', 'true').lower() == 'true'
+SYNC_INVESTMENTS: bool = os.getenv('SYNC_INVESTMENTS', 'true').lower() == 'true'
 
 # Ask Plaid to refresh transaction data before each fetch attempt.
 # Helpful when institutions have recently updated or when older history is not yet available.
@@ -144,6 +151,17 @@ class PlaidProfile:
     @property
     def token_prefix(self) -> str:
         return f"{self.prefix}_{self.env.upper()}_TOKEN_"
+
+    @property
+    def institutions(self) -> dict[str, str]:
+        """Extract institution access tokens from environment variables."""
+        tokens = {}
+        for key in os.environ:
+            if key.startswith(self.token_prefix):
+                institution_name = key[len(self.token_prefix):]
+                if institution_name:  # Make sure it's not empty
+                    tokens[institution_name] = os.getenv(key)
+        return tokens
 
 
 def _csv_env(name: str) -> list[str]:

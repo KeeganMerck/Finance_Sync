@@ -275,6 +275,51 @@ _CREATE_MANUAL_TRANSACTIONS_TABLE = """
     );
 """
 
+# ─── Investment Holdings Table ──────────────────────────────────────────────────
+#
+# Stores detailed investment holdings from Plaid brokerage/investment accounts.
+# Tracks individual securities, quantities, prices, and performance metrics.
+# Updated on each sync run to maintain current portfolio snapshot.
+#
+# Key features:
+# - Tracks both current holdings and historical snapshots for performance analysis
+# - Stores cost basis for gain/loss calculations
+# - Links to account_snapshots for account metadata
+
+_CREATE_INVESTMENT_HOLDINGS_TABLE = """
+    CREATE TABLE IF NOT EXISTS investment_holdings (
+        holding_id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        institution TEXT,
+        security_id TEXT,
+        symbol TEXT,
+        name TEXT,
+        quantity REAL,
+        current_price REAL,
+        current_value REAL,
+        cost_basis REAL,
+        purchase_date TEXT,
+        last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
+        snapshot_date TEXT NOT NULL,
+        FOREIGN KEY (account_id) REFERENCES account_snapshots(account_id)
+    );
+"""
+
+_CREATE_INVESTMENTS_ACCOUNT_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investments_account
+    ON investment_holdings(account_id);
+"""
+
+_CREATE_INVESTMENTS_DATE_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investments_date
+    ON investment_holdings(snapshot_date);
+"""
+
+_CREATE_INVESTMENTS_SYMBOL_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investments_symbol
+    ON investment_holdings(symbol);
+"""
+
 
 # ─── Connection Management ─────────────────────────────────────────────────────
 
@@ -373,6 +418,9 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         # Initialize manual transactions table
         init_manual_transactions(db_path)
 
+        # Initialize investment holdings table
+        init_investment_holdings(db_path)
+
     logger.info("Database schema initialized successfully.")
 
 
@@ -456,6 +504,27 @@ def init_manual_transactions(db_path: Path = DATABASE_PATH) -> None:
     with _get_connection(db_path) as conn:
         conn.execute(_CREATE_MANUAL_TRANSACTIONS_TABLE)
 
+
+def init_investment_holdings(db_path: Path = DATABASE_PATH) -> None:
+    """
+    Create the investment_holdings table and indexes if they don't already exist.
+
+    Safe to call on every startup — all DDL uses IF NOT EXISTS. No data
+    is altered when called against an existing populated database.
+
+    Args:
+        db_path: Path to the SQLite database file.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping investment holdings init.")
+        return
+
+    with _get_connection(db_path) as conn:
+        conn.execute(_CREATE_INVESTMENT_HOLDINGS_TABLE)
+        conn.execute(_CREATE_INVESTMENTS_ACCOUNT_INDEX)
+        conn.execute(_CREATE_INVESTMENTS_DATE_INDEX)
+        conn.execute(_CREATE_INVESTMENTS_SYMBOL_INDEX)
+
     logger.debug("Manual transactions table initialized successfully.")
 
 
@@ -502,6 +571,140 @@ def upsert_manual_transaction(transaction: dict, db_path: Path = DATABASE_PATH) 
         )
 
     logger.debug(f"Upserted manual transaction: {transaction.get('transaction_id')}")
+
+
+def upsert_investment_holdings(holdings: list[dict], db_path: Path = DATABASE_PATH) -> dict:
+    """
+    Batch upsert investment holdings into the investment_holdings table.
+
+    Uses holding_id as the primary key for upserts. This allows us to track
+    historical snapshots while updating current holdings.
+
+    Args:
+        holdings: List of investment holding dicts from Plaid.
+        db_path:  Path to the database.
+
+    Returns:
+        Dictionary with 'written', 'unchanged', 'total' counts.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping investment holdings upsert.")
+        return {"written": 0, "unchanged": 0, "total": 0}
+
+    if not holdings:
+        logger.debug("No investment holdings to upsert.")
+        return {"written": 0, "unchanged": 0, "total": 0}
+
+    with _get_connection(db_path) as conn:
+        written = 0
+        unchanged = 0
+
+        for holding in holdings:
+            # Use INSERT OR REPLACE for simple upsert
+            conn.execute(
+                """
+                INSERT INTO investment_holdings
+                (holding_id, account_id, institution, security_id, symbol, name,
+                 quantity, current_price, current_value, cost_basis, purchase_date, last_updated, snapshot_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(holding_id) DO UPDATE SET
+                    account_id = excluded.account_id,
+                    institution = excluded.institution,
+                    security_id = excluded.security_id,
+                    symbol = excluded.symbol,
+                    name = excluded.name,
+                    quantity = excluded.quantity,
+                    current_price = excluded.current_price,
+                    current_value = excluded.current_value,
+                    cost_basis = excluded.cost_basis,
+                    purchase_date = excluded.purchase_date,
+                    last_updated = excluded.last_updated,
+                    snapshot_date = excluded.snapshot_date
+                """,
+                (
+                    holding.get('holding_id'),
+                    holding.get('account_id'),
+                    holding.get('institution'),
+                    holding.get('security_id'),
+                    holding.get('symbol'),
+                    holding.get('name'),
+                    holding.get('quantity') or 0,
+                    holding.get('current_price') or 0,
+                    holding.get('current_value') or 0,
+                    holding.get('cost_basis') or 0,
+                    holding.get('purchase_date'),
+                    holding.get('last_updated'),
+                    holding.get('snapshot_date')
+                )
+            )
+            written += 1
+
+        total = len(holdings)
+        unchanged = 0  # With INSERT OR REPLACE, we consider all as written
+
+    logger.info(
+        f"Investment holdings upsert complete: {written} written (new or changed), "
+        f"{unchanged} unchanged, {total} total."
+    )
+    return {"written": written, "unchanged": unchanged, "total": total}
+
+
+def get_investment_holdings(db_path: Path = DATABASE_PATH) -> list[dict]:
+    """
+    Get current investment holdings from the latest snapshot.
+
+    Args:
+        db_path: Path to the database.
+
+    Returns:
+        List of investment holding dicts ordered by current_value DESC.
+    """
+    logger.info(f"ENABLE_DATABASE: {ENABLE_DATABASE}")
+    logger.info(f"db_path: {db_path}")
+    logger.info(f"Database exists: {db_path.exists()}")
+    
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — get_investment_holdings returning empty list.")
+        return []
+
+    logger.info(f"Fetching investment holdings from database: {db_path}")
+    
+    with _get_connection(db_path) as conn:
+        # First check if table exists and has data
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='investment_holdings'")
+        table_exists = cursor.fetchone()
+        logger.info(f"investment_holdings table exists: {table_exists is not None}")
+        
+        if table_exists:
+            cursor = conn.execute("SELECT COUNT(*) FROM investment_holdings")
+            count = cursor.fetchone()[0]
+            logger.info(f"Total investment holdings in database: {count}")
+        
+        cursor = conn.execute(
+            """
+            SELECT 
+                institution,
+                account_id,
+                symbol,
+                name,
+                quantity,
+                current_price,
+                current_value,
+                cost_basis,
+                purchase_date,
+                (COALESCE(current_value, 0) - COALESCE(cost_basis, 0)) as gain_loss,
+                CASE WHEN COALESCE(cost_basis, 0) > 0 
+                    THEN ((COALESCE(current_value, 0) - COALESCE(cost_basis, 0)) / COALESCE(cost_basis, 0)) * 100 
+                    ELSE 0 END as gain_loss_percent,
+                snapshot_date
+            FROM investment_holdings
+            ORDER BY current_value DESC
+            """
+        )
+        rows = cursor.fetchall()
+
+    logger.info(f"Retrieved {len(rows)} investment holding(s) from database.")
+    return [dict(row) for row in rows]
 
 
 def get_manual_transactions(db_path: Path = DATABASE_PATH) -> list[dict]:

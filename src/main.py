@@ -11,6 +11,7 @@ Pipeline stages (in order):
   1. Load transactions   — sync.py
   1b. Fetch balances     — balance.py (account balance snapshots)
   1c. Fetch investments   — balance.py (investment holdings from Plaid)
+  1d. Fetch investment transactions — balance.py (transaction history for cost basis)
   2. Categorize          — categorizer.py (normalize merchants, apply overrides)
   3. Persist             — database.py    (SQLite upsert; skipped if disabled)
   4. Export              — export.py      (cash_flow.csv + raw_transactions.csv)
@@ -32,7 +33,7 @@ from .modules.categorizer import categorize_transactions, load_rules
 from .modules.database import get_all_transactions, init_db, upsert_transactions
 from .modules.export import run_exports
 from .modules.google_sheets import update_google_sheet
-from .modules.balance import fetch_balances, fetch_manual_balances, upsert_snapshots as upsert_balance_snapshots, export_to_sheets as export_balances_to_sheets, fetch_investments, upsert_investment_holdings
+from .modules.balance import fetch_balances, fetch_manual_balances, upsert_snapshots as upsert_balance_snapshots, export_to_sheets as export_balances_to_sheets, fetch_investments, upsert_investment_holdings, fetch_investment_transactions
 
 
 # ─── Logging Configuration ─────────────────────────────────────────────────────
@@ -178,6 +179,27 @@ def run_pipeline(enable_sheets: bool = True, sync_transactions: bool = True, syn
         except Exception:
             logger.exception(
                 "Non-fatal: investment holdings fetch and storage failed. "
+                "Continuing to transaction categorization stage."
+            )
+        
+        # Stage 1d: Fetch investment transactions for cost basis calculation
+        logger.info("Stage 1d/5 — Fetching and storing investment transactions...")
+        try:
+            from datetime import date, timedelta
+            from .modules.database import upsert_investment_transactions
+            
+            end_date = date.today()
+            start_date = end_date - timedelta(days=730)  # 2 years of history
+            
+            investment_transactions = fetch_investment_transactions(start_date, end_date)
+            if investment_transactions:
+                tx_result = upsert_investment_transactions(investment_transactions)
+                logger.info(f"  Upserted {tx_result['written']} investment transaction(s) to SQLite.")
+            else:
+                logger.info("  No investment transactions found (or Plaid disabled).")
+        except Exception:
+            logger.exception(
+                "Non-fatal: investment transactions fetch and storage failed. "
                 "Continuing to transaction categorization stage."
             )
     else:

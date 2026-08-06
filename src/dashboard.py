@@ -815,6 +815,12 @@ def spend():
     return render_template("spend.html", earliest=default_start, latest=default_end)
 
 
+@app.route("/investments")
+def investments():
+    """Investment portfolio and performance page."""
+    return render_template("investments.html")
+
+
 @app.route("/projections")
 def projections():
     return render_template("projections.html")
@@ -1093,6 +1099,139 @@ def api_investments():
                 'total_holdings': 0
             },
             'by_institution': {}
+        })
+
+
+@app.route("/api/investments/history")
+def api_investments_history():
+    """Get historical investment holdings for performance analysis."""
+    try:
+        from .modules.database import get_investment_holdings_history
+        from .core.config import ENABLE_DATABASE
+        
+        days = request.args.get('days', 90, type=int)
+        
+        logger.info(f"Fetching investment history for last {days} days")
+        
+        history = get_investment_holdings_history(days=days)
+        logger.info(f"Retrieved {len(history)} historical investment records")
+        
+        # Group by snapshot date for time series
+        by_date = {}
+        for h in history:
+            date = h.get('snapshot_date')
+            if date not in by_date:
+                by_date[date] = {
+                    'total_value': 0,
+                    'total_cost': 0,
+                    'total_gain': 0,
+                    'total_gain_percent': 0,
+                    'count': 0,
+                    'institutions': set()
+                }
+            
+            by_date[date]['total_value'] += h.get('current_value') or 0
+            by_date[date]['total_cost'] += h.get('cost_basis') or 0
+            by_date[date]['count'] += 1
+            by_date[date]['institutions'].add(h.get('institution') or 'Unknown')
+        
+        # Calculate daily metrics
+        for date in by_date:
+            by_date[date]['total_gain'] = by_date[date]['total_value'] - by_date[date]['total_cost']
+            by_date[date]['total_gain_percent'] = (
+                (by_date[date]['total_gain'] / by_date[date]['total_cost'] * 100) 
+                if by_date[date]['total_cost'] > 0 else 0
+            )
+            by_date[date]['institutions'] = list(by_date[date]['institutions'])
+        
+        # Convert to sorted list
+        time_series = sorted(
+            [{'date': date, **metrics} for date, metrics in by_date.items()],
+            key=lambda x: x['date']
+        )
+        
+        return jsonify({
+            'history': history,
+            'time_series': time_series,
+            'days': days,
+            'total_records': len(history)
+        })
+    except Exception as e:
+        logger.exception("Failed to fetch investment history")
+        return jsonify({
+            'history': [],
+            'time_series': [],
+            'days': days,
+            'total_records': 0
+        })
+
+
+@app.route("/api/investments/transactions")
+def api_investment_transactions():
+    """Get investment transactions for analysis and cost basis verification."""
+    try:
+        from .modules.database import get_investment_transactions
+        from .core.config import ENABLE_DATABASE
+
+        security_id = request.args.get('security_id')
+        symbol = request.args.get('symbol')
+        
+        logger.info(f"Fetching investment transactions - security_id: {security_id}, symbol: {symbol}")
+
+        if not ENABLE_DATABASE:
+            return jsonify({
+                'transactions': [],
+                'total_count': 0,
+                'filtered_by': None
+            })
+
+        transactions = get_investment_transactions()
+        
+        # Filter by security_id or symbol if provided
+        if security_id:
+            transactions = [t for t in transactions if t.get('security_id') == security_id]
+            filtered_by = f"security_id: {security_id}"
+        elif symbol:
+            # Need to get security_id from holdings first
+            holdings = get_investment_holdings()
+            matching_security_ids = [h['security_id'] for h in holdings if h.get('symbol') == symbol]
+            if matching_security_ids:
+                transactions = [t for t in transactions if t.get('security_id') in matching_security_ids]
+                filtered_by = f"symbol: {symbol}"
+            else:
+                transactions = []
+                filtered_by = f"symbol: {symbol} (no matches)"
+        else:
+            filtered_by = None
+
+        # Calculate summary statistics
+        summary = {
+            'total_transactions': len(transactions),
+            'total_amount_invested': sum(t.get('amount', 0) for t in transactions if t.get('type') == 'buy'),
+            'total_amount_sold': sum(t.get('amount', 0) for t in transactions if t.get('type') == 'sell'),
+            'total_quantity_bought': sum(t.get('quantity', 0) for t in transactions if t.get('type') == 'buy'),
+            'total_quantity_sold': sum(t.get('quantity', 0) for t in transactions if t.get('type') == 'sell'),
+            'date_range': {
+                'first': min((t.get('date') for t in transactions), default=None),
+                'last': max((t.get('date') for t in transactions), default=None)
+            }
+        }
+
+        return jsonify({
+            'transactions': transactions,
+            'summary': summary,
+            'filtered_by': filtered_by,
+            'total_count': len(transactions)
+        })
+
+    except Exception as e:
+        logger.exception("Failed to fetch investment transactions")
+        return jsonify({
+            'transactions': [],
+            'summary': {},
+            'filtered_by': None,
+            'total_count': 0,
+            'error': str(e)
         })
 
 

@@ -320,6 +320,82 @@ _CREATE_INVESTMENTS_SYMBOL_INDEX = """
     ON investment_holdings(symbol);
 """
 
+# Investment holdings history table for performance tracking
+# Stores historical snapshots of investment holdings over time
+_CREATE_INVESTMENT_HOLDINGS_HISTORY_TABLE = """
+    CREATE TABLE IF NOT EXISTS investment_holdings_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        holding_id TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        institution TEXT,
+        security_id TEXT,
+        symbol TEXT,
+        name TEXT,
+        quantity REAL,
+        current_price REAL,
+        current_value REAL,
+        cost_basis REAL,
+        gain_loss REAL,
+        gain_loss_percent REAL,
+        snapshot_date TEXT NOT NULL,
+        last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (account_id) REFERENCES account_snapshots(account_id)
+    );
+"""
+
+_CREATE_INVESTMENTS_HISTORY_DATE_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investments_history_date
+    ON investment_holdings_history(snapshot_date);
+"""
+
+_CREATE_INVESTMENTS_HISTORY_HOLDING_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investments_history_holding
+    ON investment_holdings_history(holding_id);
+"""
+
+_CREATE_INVESTMENTS_HISTORY_SYMBOL_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investments_history_symbol
+    ON investment_holdings_history(symbol);
+"""
+
+# Investment transactions table for detailed transaction history
+# Stores buy, sell, contribution, dividend transactions for performance analysis
+_CREATE_INVESTMENT_TRANSACTIONS_TABLE = """
+    CREATE TABLE IF NOT EXISTS investment_transactions (
+        transaction_id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        institution TEXT,
+        security_id TEXT,
+        date TEXT NOT NULL,
+        datetime TEXT,
+        name TEXT,
+        quantity REAL,
+        amount REAL,
+        price REAL,
+        fees REAL,
+        type TEXT,
+        subtype TEXT,
+        currency TEXT DEFAULT 'USD',
+        last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (account_id) REFERENCES account_snapshots(account_id)
+    );
+"""
+
+_CREATE_INVESTMENT_TRANSACTIONS_DATE_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investment_transactions_date
+    ON investment_transactions(date);
+"""
+
+_CREATE_INVESTMENT_TRANSACTIONS_ACCOUNT_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investment_transactions_account
+    ON investment_transactions(account_id);
+"""
+
+_CREATE_INVESTMENT_TRANSACTIONS_SECURITY_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investment_transactions_security
+    ON investment_transactions(security_id);
+"""
+
 
 # ─── Connection Management ─────────────────────────────────────────────────────
 
@@ -420,6 +496,12 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
 
         # Initialize investment holdings table
         init_investment_holdings(db_path)
+
+        # Initialize investment holdings history table
+        init_investment_holdings_history(db_path)
+
+        # Initialize investment transactions table
+        init_investment_transactions(db_path)
 
     logger.info("Database schema initialized successfully.")
 
@@ -525,7 +607,378 @@ def init_investment_holdings(db_path: Path = DATABASE_PATH) -> None:
         conn.execute(_CREATE_INVESTMENTS_DATE_INDEX)
         conn.execute(_CREATE_INVESTMENTS_SYMBOL_INDEX)
 
-    logger.debug("Manual transactions table initialized successfully.")
+    logger.debug("Investment holdings table initialized successfully.")
+
+
+def init_investment_holdings_history(db_path: Path = DATABASE_PATH) -> None:
+    """
+    Create the investment_holdings_history table and indexes if they don't already exist.
+
+    Safe to call on every startup — all DDL uses IF NOT EXISTS. No data
+    is altered when called against an existing populated database.
+
+    Args:
+        db_path: Path to the SQLite database file.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping investment holdings history init.")
+        return
+
+    with _get_connection(db_path) as conn:
+        conn.execute(_CREATE_INVESTMENT_HOLDINGS_HISTORY_TABLE)
+        conn.execute(_CREATE_INVESTMENTS_HISTORY_DATE_INDEX)
+        conn.execute(_CREATE_INVESTMENTS_HISTORY_HOLDING_INDEX)
+        conn.execute(_CREATE_INVESTMENTS_HISTORY_SYMBOL_INDEX)
+
+    logger.debug("Investment holdings history table initialized successfully.")
+
+
+def init_investment_transactions(db_path: Path = DATABASE_PATH) -> None:
+    """
+    Create the investment_transactions table and indexes if they don't already exist.
+
+    Safe to call on every startup — all DDL uses IF NOT EXISTS. No data
+    is altered when called against an existing populated database.
+
+    Args:
+        db_path: Path to the SQLite database file.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping investment transactions init.")
+        return
+
+    with _get_connection(db_path) as conn:
+        conn.execute(_CREATE_INVESTMENT_TRANSACTIONS_TABLE)
+        conn.execute(_CREATE_INVESTMENT_TRANSACTIONS_DATE_INDEX)
+        conn.execute(_CREATE_INVESTMENT_TRANSACTIONS_ACCOUNT_INDEX)
+        conn.execute(_CREATE_INVESTMENT_TRANSACTIONS_SECURITY_INDEX)
+
+    logger.debug("Investment transactions table initialized successfully.")
+
+
+def upsert_investment_transactions(transactions: list[dict], db_path: Path = DATABASE_PATH) -> dict:
+    """
+    Batch upsert investment transactions into the investment_transactions table.
+
+    Args:
+        transactions: List of transaction dicts with keys matching investment_transactions schema
+        db_path: Path to the SQLite database file.
+
+    Returns:
+        Dict with keys: written, unchanged, total
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping investment transactions upsert.")
+        return {"written": 0, "unchanged": 0, "total": 0}
+
+    if not transactions:
+        logger.debug("Empty transaction list — skipping investment transactions upsert.")
+        return {"written": 0, "unchanged": 0, "total": 0}
+
+    with _get_connection(db_path) as conn:
+        written = 0
+        for transaction in transactions:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO investment_transactions
+                    (transaction_id, account_id, institution, security_id, date, datetime, name,
+                     quantity, amount, price, fees, type, subtype, currency, last_updated)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(transaction_id) DO UPDATE SET
+                        date = excluded.date,
+                        datetime = excluded.datetime,
+                        name = excluded.name,
+                        quantity = excluded.quantity,
+                        amount = excluded.amount,
+                        price = excluded.price,
+                        fees = excluded.fees,
+                        type = excluded.type,
+                        subtype = excluded.subtype,
+                        currency = excluded.currency,
+                        last_updated = excluded.last_updated
+                    """,
+                    (
+                        transaction.get('transaction_id'),
+                        transaction.get('account_id'),
+                        transaction.get('institution'),
+                        transaction.get('security_id'),
+                        transaction.get('date'),
+                        transaction.get('datetime'),
+                        transaction.get('name'),
+                        transaction.get('quantity') or 0,
+                        transaction.get('amount') or 0,
+                        transaction.get('price') or 0,
+                        transaction.get('fees') or 0,
+                        transaction.get('type'),
+                        transaction.get('subtype'),
+                        transaction.get('currency', 'USD'),
+                        transaction.get('last_updated')
+                    )
+                )
+                written += 1
+            except Exception as e:
+                logger.warning(f"Failed to upsert investment transaction {transaction.get('transaction_id')}: {e}")
+
+        total = len(transactions)
+        unchanged = 0  # With INSERT OR REPLACE, we consider all as written
+
+    logger.info(
+        f"Investment transactions upsert complete: {written} written, "
+        f"{unchanged} unchanged, {total} total."
+    )
+    return {"written": written, "unchanged": unchanged, "total": total}
+
+
+def get_investment_transactions(db_path: Path = DATABASE_PATH, start_date: str = None, end_date: str = None) -> list[dict]:
+    """
+    Get investment transactions for analysis.
+
+    Args:
+        db_path: Path to the database.
+        start_date: Optional start date filter (YYYY-MM-DD)
+        end_date: Optional end date filter (YYYY-MM-DD)
+
+    Returns:
+        List of transaction dicts ordered by date DESC.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — get_investment_transactions returning empty list.")
+        return []
+
+    logger.info(f"Fetching investment transactions from database: {db_path}")
+    
+    query = """
+        SELECT 
+            transaction_id,
+            account_id,
+            institution,
+            security_id,
+            date,
+            datetime,
+            name,
+            quantity,
+            amount,
+            price,
+            fees,
+            type,
+            subtype,
+            currency,
+            last_updated
+        FROM investment_transactions
+    """
+    
+    params = []
+    if start_date:
+        query += " WHERE date >= ?"
+        params.append(start_date)
+        if end_date:
+            query += " AND date <= ?"
+            params.append(end_date)
+    elif end_date:
+        query += " WHERE date <= ?"
+        params.append(end_date)
+    
+    query += " ORDER BY date DESC"
+    
+    with _get_connection(db_path) as conn:
+        cursor = conn.execute(query, params)
+        rows = cursor.fetchall()
+
+    logger.info(f"Retrieved {len(rows)} investment transaction(s) from database.")
+    return [dict(row) for row in rows]
+
+
+def calculate_cost_basis_from_transactions(db_path: Path = DATABASE_PATH) -> dict:
+    """
+    Calculate total amount invested for each security from transaction history.
+
+    This sums ALL buy transactions for each security to get the total amount invested,
+    which is the correct cost basis for recurring investment contributions (like 401k).
+
+    Args:
+        db_path: Path to the database.
+
+    Returns:
+        Dict mapping security_id to total amount invested (cost basis).
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — calculate_cost_basis_from_transactions returning empty dict.")
+        return {}
+
+    logger.info("Calculating total amount invested from transaction history")
+    
+    amount_invested = {}
+    
+    with _get_connection(db_path) as conn:
+        # Sum all buy transactions by security to get total amount invested
+        cursor = conn.execute(
+            """
+            SELECT 
+                security_id,
+                SUM(amount) as total_invested,
+                SUM(quantity) as total_quantity,
+                COUNT(*) as transaction_count
+            FROM investment_transactions
+            WHERE type = 'buy'
+            GROUP BY security_id
+            """
+        )
+        rows = cursor.fetchall()
+
+        for row in rows:
+            security_id = row['security_id']
+            total_invested = row['total_invested'] or 0
+            total_quantity = row['total_quantity'] or 0
+            tx_count = row['transaction_count'] or 0
+            
+            amount_invested[security_id] = {
+                'total_invested': total_invested,
+                'total_quantity': total_quantity,
+                'transaction_count': tx_count
+            }
+
+        # Also account for sell transactions by subtracting from amount invested
+        cursor = conn.execute(
+            """
+            SELECT 
+                security_id,
+                SUM(amount) as total_sold,
+                SUM(quantity) as total_quantity_sold
+            FROM investment_transactions
+            WHERE type = 'sell'
+            GROUP BY security_id
+            """
+        )
+        sell_rows = cursor.fetchall()
+
+        for row in sell_rows:
+            security_id = row['security_id']
+            total_sold = row['total_sold'] or 0
+            
+            if security_id in amount_invested:
+                amount_invested[security_id]['total_invested'] -= total_sold
+
+    logger.info(f"Calculated total amount invested for {len(amount_invested)} securities")
+    return amount_invested
+
+
+def upsert_investment_holdings_history(holdings: list[dict], db_path: Path = DATABASE_PATH) -> dict:
+    """
+    Batch upsert investment holdings into the investment_holdings_history table.
+    
+    Creates historical snapshots for performance tracking over time.
+    Each sync run creates a new snapshot with the current holdings state.
+
+    Args:
+        holdings: List of holding dicts with keys matching investment_holdings schema
+        db_path: Path to the SQLite database file.
+
+    Returns:
+        Dict with keys: written, unchanged, total
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping investment holdings history upsert.")
+        return {"written": 0, "unchanged": 0, "total": 0}
+
+    if not holdings:
+        logger.debug("Empty holdings list — skipping investment holdings history upsert.")
+        return {"written": 0, "unchanged": 0, "total": 0}
+
+    with _get_connection(db_path) as conn:
+        written = 0
+        for holding in holdings:
+            try:
+                # Calculate gain/loss metrics
+                current_value = holding.get('current_value') or 0
+                cost_basis = holding.get('cost_basis') or 0
+                gain_loss = current_value - cost_basis
+                gain_loss_percent = (gain_loss / cost_basis * 100) if cost_basis > 0 else 0
+
+                conn.execute(
+                    """
+                    INSERT INTO investment_holdings_history
+                    (holding_id, account_id, institution, security_id, symbol, name,
+                     quantity, current_price, current_value, cost_basis, gain_loss, gain_loss_percent,
+                     snapshot_date, last_updated)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        holding.get('holding_id'),
+                        holding.get('account_id'),
+                        holding.get('institution'),
+                        holding.get('security_id'),
+                        holding.get('symbol'),
+                        holding.get('name'),
+                        holding.get('quantity') or 0,
+                        holding.get('current_price') or 0,
+                        holding.get('current_value') or 0,
+                        holding.get('cost_basis') or 0,
+                        gain_loss,
+                        gain_loss_percent,
+                        holding.get('snapshot_date'),
+                        holding.get('last_updated')
+                    )
+                )
+                written += 1
+            except Exception as e:
+                logger.warning(f"Failed to upsert investment history holding {holding.get('symbol')}: {e}")
+
+        total = len(holdings)
+        unchanged = 0  # With INSERT, we consider all as written
+
+    logger.info(
+        f"Investment holdings history upsert complete: {written} written, "
+        f"{unchanged} unchanged, {total} total."
+    )
+    return {"written": written, "unchanged": unchanged, "total": total}
+
+
+def get_investment_holdings_history(db_path: Path = DATABASE_PATH, days: int = 90) -> list[dict]:
+    """
+    Get historical investment holdings for performance analysis.
+
+    Args:
+        db_path: Path to the database.
+        days: Number of days of history to retrieve (default: 90)
+
+    Returns:
+        List of historical holding dicts ordered by snapshot_date DESC.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — get_investment_holdings_history returning empty list.")
+        return []
+
+    logger.info(f"Fetching investment holdings history from database: {db_path}")
+    
+    with _get_connection(db_path) as conn:
+        cursor = conn.execute(
+            """
+            SELECT 
+                holding_id,
+                account_id,
+                institution,
+                security_id,
+                symbol,
+                name,
+                quantity,
+                current_price,
+                current_value,
+                cost_basis,
+                gain_loss,
+                gain_loss_percent,
+                snapshot_date,
+                last_updated
+            FROM investment_holdings_history
+            WHERE snapshot_date >= date('now', '-' || ? || ' days')
+            ORDER BY snapshot_date DESC, symbol ASC
+            """,
+            (days,)
+        )
+        rows = cursor.fetchall()
+
+    logger.info(f"Retrieved {len(rows)} historical investment holding(s) from database.")
+    return [dict(row) for row in rows]
 
 
 def upsert_manual_transaction(transaction: dict, db_path: Path = DATABASE_PATH) -> None:
@@ -595,11 +1048,22 @@ def upsert_investment_holdings(holdings: list[dict], db_path: Path = DATABASE_PA
         logger.debug("No investment holdings to upsert.")
         return {"written": 0, "unchanged": 0, "total": 0}
 
+    # Calculate total amount invested from transaction history for holdings missing cost_basis
+    amount_invested_map = calculate_cost_basis_from_transactions(db_path)
+    
     with _get_connection(db_path) as conn:
         written = 0
         unchanged = 0
 
         for holding in holdings:
+            # Use calculated amount invested if direct cost_basis is missing
+            security_id = holding.get('security_id')
+            cost_basis = holding.get('cost_basis', 0)
+            
+            if not cost_basis and security_id in amount_invested_map:
+                cost_basis = amount_invested_map[security_id]['total_invested']
+                logger.debug(f"Using calculated amount invested for {security_id}: ${cost_basis:.2f} ({amount_invested_map[security_id]['transaction_count']} transactions)")
+            
             # Use INSERT OR REPLACE for simple upsert
             conn.execute(
                 """
@@ -631,7 +1095,7 @@ def upsert_investment_holdings(holdings: list[dict], db_path: Path = DATABASE_PA
                     holding.get('quantity') or 0,
                     holding.get('current_price') or 0,
                     holding.get('current_value') or 0,
-                    holding.get('cost_basis') or 0,
+                    cost_basis,
                     holding.get('purchase_date'),
                     holding.get('last_updated'),
                     holding.get('snapshot_date')

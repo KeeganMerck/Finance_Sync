@@ -640,6 +640,110 @@ def _summary_cards() -> dict:
     }
 
 
+def _investment_data() -> dict:
+    """Return investment accounts, current holdings, history, and activity."""
+    accounts = [
+        a for a in _current_accounts()
+        if (a.get("account_type") or "").lower() == "investment"
+    ]
+    account_names = {
+        a["account_id"]: a.get("account_name") or a["account_id"]
+        for a in accounts
+    }
+
+    holdings = _rows(
+        """
+        WITH ranked AS (
+            SELECT h.*,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY h.holding_id
+                       ORDER BY h.snapshot_date DESC, h.last_updated DESC
+                   ) AS rn
+            FROM investment_holdings h
+        )
+        SELECT holding_id, account_id, institution, security_id, symbol, name,
+               quantity, current_price, current_value, cost_basis,
+               purchase_date, last_updated, snapshot_date
+        FROM ranked
+        WHERE rn = 1
+        ORDER BY current_value DESC, symbol
+        """
+    )
+    for holding in holdings:
+        holding["account_name"] = account_names.get(
+            holding["account_id"], holding["account_id"]
+        )
+        holding["gain_loss"] = round(
+            (holding.get("current_value") or 0) - (holding.get("cost_basis") or 0), 2
+        )
+        cost_basis = holding.get("cost_basis") or 0
+        holding["gain_loss_percent"] = round(
+            holding["gain_loss"] / cost_basis * 100, 2
+        ) if cost_basis else None
+
+    history = _rows(
+        """
+        WITH ranked AS (
+            SELECT h.*,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY h.holding_id, h.snapshot_date
+                       ORDER BY h.last_updated DESC, h.id DESC
+                   ) AS rn
+            FROM investment_holdings_history h
+        )
+        SELECT snapshot_date,
+               SUM(current_value) AS current_value,
+               SUM(cost_basis) AS cost_basis,
+               SUM(gain_loss) AS gain_loss
+        FROM ranked
+        WHERE rn = 1
+        GROUP BY snapshot_date
+        ORDER BY snapshot_date
+        """
+    )
+
+    investment_transactions = _rows(
+        """
+        SELECT transaction_id, account_id, institution, security_id, date,
+               datetime, name, quantity, amount, price, fees, type, subtype,
+               currency, last_updated
+        FROM investment_transactions
+        ORDER BY date DESC, datetime DESC, name
+        """
+    )
+    for txn in investment_transactions:
+        txn["account_name"] = account_names.get(
+            txn["account_id"], txn["account_id"]
+        )
+
+    current_value = round(sum(h.get("current_value") or 0 for h in holdings), 2)
+    cost_basis = round(sum(h.get("cost_basis") or 0 for h in holdings), 2)
+    gain_loss = round(current_value - cost_basis, 2)
+    transaction_amount = round(
+        sum(t.get("amount") or 0 for t in investment_transactions), 2
+    )
+    snapshots = [h.get("snapshot_date") for h in holdings if h.get("snapshot_date")]
+
+    return {
+        "summary": {
+            "current_value": current_value,
+            "cost_basis": cost_basis,
+            "gain_loss": gain_loss,
+            "gain_loss_percent": round(gain_loss / cost_basis * 100, 2)
+            if cost_basis else None,
+            "holding_count": len(holdings),
+            "account_count": len(accounts),
+            "transaction_count": len(investment_transactions),
+            "transaction_amount": transaction_amount,
+            "as_of": max(snapshots) if snapshots else None,
+        },
+        "accounts": accounts,
+        "holdings": holdings,
+        "history": history,
+        "transactions": investment_transactions,
+    }
+
+
 def _projections(lookback_months: int = 12) -> dict:
     """
     Project annual spend/income per category based on the last N complete months.
@@ -758,11 +862,19 @@ def networth():
     return render_template("networth.html")
 
 
+@app.route("/investments")
+def investments():
+    return render_template("investments.html")
+
+
 # ── API routes ────────────────────────────────────────────────────────────────
 
 @app.route("/api/summary")
 def api_summary():
-    return jsonify(_summary_cards())
+    summary = _summary_cards()
+    investment = _investment_data()["summary"]
+    summary["investments"] = investment
+    return jsonify(summary)
 
 
 @app.route("/api/spend/monthly")
@@ -904,6 +1016,16 @@ def api_transactions():
     start_date = request.args.get("start_date")
     end_date = request.args.get("end_date")
     return jsonify(_get_transactions(start_date, end_date))
+
+
+@app.route("/api/investments")
+def api_investments():
+    """Return investment accounts, current holdings, history, and activity."""
+    try:
+        return jsonify(_investment_data())
+    except Exception as e:
+        logger.exception("Error in api_investments")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/transaction/update", methods=["POST"])

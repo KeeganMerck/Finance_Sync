@@ -1,2 +1,3 @@
 - [Dashboard architecture](dashboard-architecture.md) — Flask dashboard at src/dashboard.py on port 5000; templates in src/templates/; read-only SQLite queries only.
 - [Connection recovery flow](connection-recovery.md) — Plaid login errors trigger interactive terminal reconnect prompt in sync.py; recovery module in src/modules/connection_recovery.py.
+- [Investment dashboard](investment-dashboard.md) — Investments combine current holdings, holdings history, investment activity, and investment account snapshots.

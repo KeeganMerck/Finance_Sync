@@ -1,0 +1,985 @@
+{% extends "base.html" %}
+{% block title %}Transactions — Finance{% endblock %}
+
+{% block content %}
+<div class="space-y-8 fade-in">
+
+  <!-- ── Header ── -->
+  <div class="flex flex-col sm:flex-row sm:items-end gap-4">
+    <div>
+      <h1 class="text-2xl font-bold text-slate-100">Transactions</h1>
+      <p class="text-sm text-slate-400 mt-1">Excel-like view with column-specific filters and sorting</p>
+    </div>
+
+    <!-- Controls -->
+    <div class="sm:ml-auto flex items-end gap-3">
+      <div class="flex flex-col gap-1">
+        <label class="text-xs text-slate-500 uppercase tracking-wider">&nbsp;</label>
+        <button id="add-manual-btn" class="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          + Add Manual
+        </button>
+      </div>
+      <div class="flex flex-col gap-1">
+        <label class="text-xs text-slate-500 uppercase tracking-wider">&nbsp;</label>
+        <button id="reset-all-btn" class="bg-slate-600 hover:bg-slate-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          Reset All
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Active Filters Display ── -->
+  <div id="active-filters" class="bg-surface rounded-xl border border-slate-700 p-4 hidden">
+    <div class="flex items-center justify-between mb-2">
+      <h3 class="text-sm font-semibold text-slate-100">Active Filters</h3>
+      <button id="clear-all-filters-btn" class="text-xs text-slate-400 hover:text-slate-200">Clear All</button>
+    </div>
+    <div id="active-filters-list" class="flex flex-wrap gap-2">
+      <!-- Active filter tags will appear here -->
+    </div>
+  </div>
+
+  <!-- ── Transactions table ── -->
+  <div class="bg-surface rounded-xl border border-slate-700">
+    <div class="table-scroll">
+      <div id="table-wrap" class="p-4" data-sync-days="14">
+        <div class="spinner"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Column Filter Menu ── -->
+<div id="column-filter-menu" class="fixed bg-surface border border-slate-700 rounded-lg shadow-xl z-50 hidden min-w-64 max-h-96 overflow-y-auto">
+  <div class="p-4">
+    <h3 class="text-sm font-semibold text-slate-100 mb-3" id="filter-menu-title">Filter</h3>
+    <div id="filter-menu-content">
+      <!-- Filter options will be dynamically added -->
+    </div>
+    <div class="flex gap-2 mt-4 pt-3 border-t border-slate-700">
+      <button id="apply-column-filter-btn" class="bg-sky-500 hover:bg-sky-600 text-white px-3 py-1.5 rounded text-sm font-medium transition-colors flex-1">
+        Apply
+      </button>
+      <button id="clear-column-filter-btn" class="bg-slate-600 hover:bg-slate-500 text-white px-3 py-1.5 rounded text-sm font-medium transition-colors">
+        Clear
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Add Manual Transaction Modal ── -->
+<div id="manual-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+  <div class="bg-surface rounded-xl border border-slate-700 p-6 w-full max-w-lg mx-4">
+    <h2 class="text-lg font-bold text-slate-100 mb-4">Add Manual Transaction</h2>
+    <form id="manual-form" class="space-y-4">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Date</label>
+          <input type="date" id="manual-date" required class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Amount</label>
+          <input type="number" step="0.01" id="manual-amount" required class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="0.00">
+        </div>
+      </div>
+      
+      <div>
+        <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Account</label>
+        <input type="text" id="manual-account" required class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="e.g., Cash, Savings">
+      </div>
+      
+      <div>
+        <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Description</label>
+        <input type="text" id="manual-description" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="e.g., Grocery store">
+      </div>
+      
+      <div>
+        <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Category</label>
+        <input type="text" id="manual-category" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="e.g., Groceries">
+      </div>
+      
+      <div class="flex gap-3 justify-end pt-4">
+        <button type="button" id="cancel-manual-btn" class="px-4 py-2 rounded-lg text-sm font-medium text-slate-300 hover:text-slate-100 transition-colors">
+          Cancel
+        </button>
+        <button type="submit" class="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          Save
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Edit Transaction Modal ── -->
+<div id="edit-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+  <div class="bg-surface rounded-xl border border-slate-700 p-6 w-full max-w-lg mx-4">
+    <h2 class="text-lg font-bold text-slate-100 mb-4" id="edit-modal-title">Edit Transaction</h2>
+    <form id="edit-form" class="space-y-4">
+      <input type="hidden" id="edit-transaction-id">
+      <input type="hidden" id="edit-transaction-source">
+      
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Date <span id="edit-date-readonly-indicator" class="text-slate-500 text-xs hidden">(read-only)</span></label>
+          <input type="date" id="edit-date" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" readonly>
+        </div>
+        
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Account <span id="edit-account-readonly-indicator" class="text-slate-500 text-xs hidden">(read-only)</span></label>
+          <input type="text" id="edit-account" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" readonly>
+        </div>
+        
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Description <span id="edit-description-readonly-indicator" class="text-slate-500 text-xs hidden">(read-only)</span></label>
+          <input type="text" id="edit-description" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" readonly>
+        </div>
+        
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Category <span id="edit-category-readonly-indicator" class="text-slate-500 text-xs hidden">(read-only)</span></label>
+          <input type="text" id="edit-category" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" readonly>
+        </div>
+        
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Amount <span id="edit-amount-readonly-indicator" class="text-slate-500 text-xs hidden">(read-only)</span></label>
+          <input type="number" step="0.01" id="edit-amount" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" readonly>
+        </div>
+      </div>
+      
+      <div class="flex gap-3 justify-end pt-4">
+        <button type="button" id="cancel-edit-btn" class="px-4 py-2 rounded-lg text-sm font-medium text-slate-300 hover:text-slate-100 transition-colors">
+          Cancel
+        </button>
+        <button type="submit" class="bg-sky-500 hover:bg-sky-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          Save Changes
+        </button>
+      </div>
+      
+      <div class="border-t border-slate-700 pt-4 mt-4">
+        <button type="button" id="exclude-btn" class="w-full bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          Exclude from Dashboard
+        </button>
+        <button type="button" id="delete-btn" class="w-full bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors hidden">
+          Delete Transaction
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Exclude Confirmation Modal ── -->
+<div id="exclude-confirm-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+  <div class="bg-surface rounded-xl border border-slate-700 p-6 w-full max-w-md mx-4">
+    <h2 class="text-lg font-bold text-red-400 mb-4">⚠️ Confirm Exclusion</h2>
+    <p class="text-sm text-slate-300 mb-4">
+      This will exclude the transaction from the dashboard. It will still be stored in the database but hidden from all views.
+    </p>
+    <p class="text-sm text-slate-400 mb-4">
+      Type <code class="bg-slate-800 px-2 py-1 rounded text-sky-400">exclude</code> to confirm:
+    </p>
+    <input type="text" id="exclude-confirm-input" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-red-500 mb-4" placeholder="Type 'exclude' to confirm">
+    <div class="flex gap-3 justify-end">
+      <button type="button" id="cancel-exclude-btn" class="px-4 py-2 rounded-lg text-sm font-medium text-slate-300 hover:text-slate-100 transition-colors">
+        Cancel
+      </button>
+      <button type="button" id="confirm-exclude-btn" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors" disabled>
+        Confirm Exclusion
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Delete Confirmation Modal ── -->
+<div id="delete-confirm-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+  <div class="bg-surface rounded-xl border border-slate-700 p-6 w-full max-w-md mx-4">
+    <h2 class="text-lg font-bold text-red-400 mb-4">⚠️ Confirm Deletion</h2>
+    <p class="text-sm text-slate-300 mb-4">
+      This will permanently delete the manual transaction from both the dashboard and the database. This action cannot be undone.
+    </p>
+    <p class="text-sm text-slate-400 mb-4">
+      Type <code class="bg-slate-800 px-2 py-1 rounded text-sky-400">delete</code> to confirm:
+    </p>
+    <input type="text" id="delete-confirm-input" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-red-500 mb-4" placeholder="Type 'delete' to confirm">
+    <div class="flex gap-3 justify-end">
+      <button type="button" id="cancel-delete-btn" class="px-4 py-2 rounded-lg text-sm font-medium text-slate-300 hover:text-slate-100 transition-colors">
+        Cancel
+      </button>
+      <button type="button" id="confirm-delete-btn" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors" disabled>
+        Confirm Deletion
+      </button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let allTransactions = [];
+let filteredTransactions = [];
+let columnFilters = {}; // { column: { type, operator, value, value2 } }
+let columnSorts = {}; // { column: 'asc' | 'desc' | null }
+let currentFilterColumn = null;
+let currentTransactionToExclude = null;
+let currentEditingTransaction = null;
+
+// Column definitions with data types
+const COLUMNS = [
+  { key: 'Date', label: 'Date', type: 'date' },
+  { key: 'Account', label: 'Account', type: 'text' },
+  { key: 'Description', label: 'Description', type: 'text' },
+  { key: 'Category', label: 'Category', type: 'text' },
+  { key: 'Amount', label: 'Amount', type: 'number' }
+];
+
+// Load transactions on page load
+loadTransactions();
+
+// Load saved filters and sorts from localStorage
+loadSavedState();
+
+// Check for URL parameters (from spend table navigation)
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.has('start_date') || urlParams.has('end_date') || urlParams.has('category')) {
+  // Clear saved state when navigating from spend table
+  columnFilters = {};
+  columnSorts = {};
+  
+  const startDate = urlParams.get('start_date');
+  const endDate = urlParams.get('end_date');
+  const category = urlParams.get('category');
+  
+  // Add date range filter to columnFilters if both dates are provided
+  if (startDate && endDate) {
+    columnFilters['Date'] = {
+      type: 'date',
+      operator: 'between',
+      value: startDate,
+      value2: endDate
+    };
+  }
+  
+  // Add category filter to columnFilters if provided
+  if (category) {
+    columnFilters['Category'] = {
+      type: 'text',
+      operator: 'equals',
+      value: category,
+      value2: null
+    };
+  }
+  
+  loadTransactions();
+  
+  // Clean URL parameters
+  window.history.replaceState({}, '', window.location.pathname);
+}
+
+// Event listeners
+document.getElementById('add-manual-btn').addEventListener('click', openManualModal);
+document.getElementById('reset-all-btn').addEventListener('click', resetAll);
+document.getElementById('clear-all-filters-btn').addEventListener('click', clearAllFilters);
+document.getElementById('manual-form').addEventListener('submit', addManualTransaction);
+document.getElementById('cancel-manual-btn').addEventListener('click', closeManualModal);
+document.getElementById('edit-form').addEventListener('submit', saveEdit);
+document.getElementById('cancel-edit-btn').addEventListener('click', closeEditModal);
+document.getElementById('exclude-btn').addEventListener('click', showExcludeConfirm);
+document.getElementById('delete-btn').addEventListener('click', showDeleteConfirm);
+document.getElementById('cancel-exclude-btn').addEventListener('click', closeExcludeConfirm);
+document.getElementById('confirm-exclude-btn').addEventListener('click', confirmExclude);
+document.getElementById('exclude-confirm-input').addEventListener('input', checkExcludeConfirm);
+document.getElementById('cancel-delete-btn').addEventListener('click', closeDeleteConfirm);
+document.getElementById('confirm-delete-btn').addEventListener('click', confirmDelete);
+document.getElementById('delete-confirm-input').addEventListener('input', checkDeleteConfirm);
+document.getElementById('apply-column-filter-btn').addEventListener('click', applyColumnFilter);
+document.getElementById('clear-column-filter-btn').addEventListener('click', clearColumnFilter);
+
+// Close filter menu when clicking outside
+document.addEventListener('click', (e) => {
+  const menu = document.getElementById('column-filter-menu');
+  if (!menu.contains(e.target) && !e.target.closest('.filter-btn')) {
+    menu.classList.add('hidden');
+  }
+});
+
+function loadTransactions() {
+  document.getElementById('table-wrap').innerHTML = '<div class="spinner"></div>';
+  
+  // Load all transactions without date filtering - let frontend handle all filters
+  fetch('/api/transactions')
+    .then(r => r.json())
+    .then(data => {
+      allTransactions = data;
+      filteredTransactions = [...allTransactions];
+      applyFiltersAndSorts();
+    })
+    .catch(() => {
+      document.getElementById('table-wrap').innerHTML = '<p class="text-slate-500 text-sm p-2">Failed to load transactions.</p>';
+    });
+}
+
+function loadSavedState() {
+  try {
+    const savedFilters = localStorage.getItem('transactionFilters');
+    const savedSorts = localStorage.getItem('transactionSorts');
+    
+    if (savedFilters) {
+      columnFilters = JSON.parse(savedFilters);
+    }
+    if (savedSorts) {
+      columnSorts = JSON.parse(savedSorts);
+    }
+  } catch (e) {
+    console.error('Failed to load saved state:', e);
+  }
+}
+
+function saveState() {
+  try {
+    localStorage.setItem('transactionFilters', JSON.stringify(columnFilters));
+    localStorage.setItem('transactionSorts', JSON.stringify(columnSorts));
+  } catch (e) {
+    console.error('Failed to save state:', e);
+  }
+}
+
+function renderTable(transactions) {
+  const wrap = document.getElementById('table-wrap');
+  if (!transactions || transactions.length === 0) {
+    wrap.innerHTML = '<p class="text-slate-500 text-sm p-2">No transactions found.</p>';
+    return;
+  }
+
+  const SYNC_DAYS = parseInt(wrap.getAttribute('data-sync-days') || '14');
+
+  // Build headers with filter buttons and sort indicators
+  const thead = `<thead><tr>
+    ${COLUMNS.map(col => {
+      const sortIndicator = columnSorts[col.key] === 'asc' ? ' ↑' : 
+                           columnSorts[col.key] === 'desc' ? ' ↓' : '';
+      const filterIndicator = columnFilters[col.key] ? ' 🔍' : '';
+      return `<th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 font-medium whitespace-nowrap border-b border-slate-700">
+        <div class="flex items-center gap-2">
+          <span class="cursor-pointer hover:text-sky-400" onclick="cycleSort('${col.key}')">${col.label}${sortIndicator}</span>
+          <button class="filter-btn text-slate-500 hover:text-sky-400 text-xs" onclick="openColumnFilter(event, '${col.key}')">${filterIndicator || '⚙'}</button>
+        </div>
+      </th>`;
+    }).join('')}
+    <th class="bg-surface text-center text-xs text-slate-400 px-4 py-2.5 font-medium whitespace-nowrap border-b border-slate-700">Actions</th>
+  </tr></thead>`;
+
+  const rows = transactions.map((t, i) => {
+    const bg = i % 2 === 0 ? 'bg-base' : 'bg-surface';
+    const txnDate = new Date(t.Date);
+    const today = new Date();
+    const daysOld = Math.floor((today - txnDate) / (1000 * 60 * 60 * 24));
+    const isEditable = daysOld > SYNC_DAYS && t.source === 'plaid';
+    const isManual = t.source === 'manual';
+    const canEdit = isEditable || isManual;
+    
+    return `<tr>
+      <td class="${bg} px-4 py-2 text-sm text-slate-200 whitespace-nowrap">${t.Date}</td>
+      <td class="${bg} px-4 py-2 text-sm text-slate-300">${t.Account || '-'}</td>
+      <td class="${bg} px-4 py-2 text-sm text-slate-300">${t.Description || '-'}</td>
+      <td class="${bg} px-4 py-2 text-sm text-slate-300">${t.Category || '-'}</td>
+      <td class="${bg} text-right px-4 py-2 text-sm font-medium whitespace-nowrap">${amtSpan(t.Amount)}</td>
+      <td class="${bg} text-center px-4 py-2 whitespace-nowrap">
+        ${canEdit ? `<button onclick="openEditModal('${t.transaction_id}')" class="text-sky-400 hover:text-sky-300 text-xs font-medium">Edit</button>` : '<span class="text-slate-600 text-xs">—</span>'}
+      </td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <table class="w-full text-xs border-collapse">
+      ${thead}
+      <tbody>${rows}</tbody>
+    </table>
+    
+    <p class="text-xs text-slate-500 mt-4">
+      Showing ${transactions.length} of ${allTransactions.length} transactions. Edit button available for transactions older than ${SYNC_DAYS} days or manual transactions.
+    </p>`;
+  
+  updateActiveFiltersDisplay();
+}
+
+function cycleSort(column) {
+  // Cycle: null -> desc -> asc -> null
+  const currentSort = columnSorts[column];
+  let newSort;
+  
+  if (currentSort === null) {
+    newSort = 'desc';
+  } else if (currentSort === 'desc') {
+    newSort = 'asc';
+  } else {
+    newSort = null;
+  }
+  
+  columnSorts[column] = newSort;
+  
+  // Reset other column sorts if we're sorting by this column
+  if (newSort !== null) {
+    Object.keys(columnSorts).forEach(col => {
+      if (col !== column) columnSorts[col] = null;
+    });
+  }
+  
+  applyFiltersAndSorts();
+}
+
+function openColumnFilter(event, column) {
+  event.stopPropagation();
+  currentFilterColumn = column;
+  
+  const menu = document.getElementById('column-filter-menu');
+  const title = document.getElementById('filter-menu-title');
+  const content = document.getElementById('filter-menu-content');
+  
+  const colDef = COLUMNS.find(c => c.key === column);
+  title.textContent = `Filter ${colDef.label}`;
+  
+  // Generate filter options based on data type
+  let filterHtml = '';
+  
+  if (colDef.type === 'date') {
+    filterHtml = `
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs text-slate-500 mb-1">Operator</label>
+          <select id="filter-operator" class="w-full bg-base border border-slate-600 rounded px-2 py-1 text-sm text-slate-100">
+            <option value="equals">Equals</option>
+            <option value="before">Before</option>
+            <option value="after">After</option>
+            <option value="between">Between</option>
+            <option value="outside">Outside</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500 mb-1">Value 1</label>
+          <input type="date" id="filter-value" class="w-full bg-base border border-slate-600 rounded px-2 py-1 text-sm text-slate-100">
+        </div>
+        <div id="filter-value2-container" class="hidden">
+          <label class="block text-xs text-slate-500 mb-1">Value 2</label>
+          <input type="date" id="filter-value2" class="w-full bg-base border border-slate-600 rounded px-2 py-1 text-sm text-slate-100">
+        </div>
+      </div>
+    `;
+  } else if (colDef.type === 'number') {
+    filterHtml = `
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs text-slate-500 mb-1">Operator</label>
+          <select id="filter-operator" class="w-full bg-base border border-slate-600 rounded px-2 py-1 text-sm text-slate-100">
+            <option value="equals">Equals</option>
+            <option value="not_equals">Not Equals</option>
+            <option value="greater_than">Greater Than</option>
+            <option value="less_than">Less Than</option>
+            <option value="greater_equal">Greater or Equal</option>
+            <option value="less_equal">Less or Equal</option>
+            <option value="between">Between</option>
+            <option value="outside">Outside</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500 mb-1">Value 1</label>
+          <input type="number" step="0.01" id="filter-value" class="w-full bg-base border border-slate-600 rounded px-2 py-1 text-sm text-slate-100" placeholder="0.00">
+        </div>
+        <div id="filter-value2-container" class="hidden">
+          <label class="block text-xs text-slate-500 mb-1">Value 2</label>
+          <input type="number" step="0.01" id="filter-value2" class="w-full bg-base border border-slate-600 rounded px-2 py-1 text-sm text-slate-100" placeholder="0.00">
+        </div>
+      </div>
+    `;
+  } else {
+    // Text type
+    filterHtml = `
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs text-slate-500 mb-1">Operator</label>
+          <select id="filter-operator" class="w-full bg-base border border-slate-600 rounded px-2 py-1 text-sm text-slate-100">
+            <option value="equals">Equals</option>
+            <option value="not_equals">Not Equals</option>
+            <option value="contains">Contains</option>
+            <option value="not_contains">Not Contains</option>
+            <option value="starts_with">Starts With</option>
+            <option value="ends_with">Ends With</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500 mb-1">Value</label>
+          <input type="text" id="filter-value" class="w-full bg-base border border-slate-600 rounded px-2 py-1 text-sm text-slate-100" placeholder="Enter text">
+        </div>
+      </div>
+    `;
+  }
+  
+  content.innerHTML = filterHtml;
+  
+  // Add event listener for operator change to show/hide value2 input (only for date/number types)
+  const operatorSelect = document.getElementById('filter-operator');
+  const value2Container = document.getElementById('filter-value2-container');
+  if (value2Container) {
+    operatorSelect.addEventListener('change', () => {
+      const needsValue2 = ['between', 'outside'].includes(operatorSelect.value);
+      value2Container.classList.toggle('hidden', !needsValue2);
+    });
+  }
+  
+  // Pre-fill existing filter if any
+  if (columnFilters[column]) {
+    const existingFilter = columnFilters[column];
+    document.getElementById('filter-operator').value = existingFilter.operator;
+    document.getElementById('filter-value').value = existingFilter.value;
+    if (existingFilter.value2 && value2Container) {
+      document.getElementById('filter-value2').value = existingFilter.value2;
+      value2Container.classList.remove('hidden');
+    }
+  }
+  
+  // Position menu near the clicked element
+  const rect = event.target.getBoundingClientRect();
+  menu.style.top = `${rect.bottom + 5}px`;
+  menu.style.left = `${rect.left}px`;
+  menu.classList.remove('hidden');
+}
+
+function applyColumnFilter() {
+  const operator = document.getElementById('filter-operator').value;
+  const value = document.getElementById('filter-value').value;
+  const value2Container = document.getElementById('filter-value2-container');
+  const value2 = value2Container && !value2Container.classList.contains('hidden') ? 
+                 document.getElementById('filter-value2').value : null;
+  
+  if (!value) {
+    alert('Please enter a filter value');
+    return;
+  }
+  
+  columnFilters[currentFilterColumn] = {
+    type: COLUMNS.find(c => c.key === currentFilterColumn).type,
+    operator,
+    value,
+    value2
+  };
+  
+  document.getElementById('column-filter-menu').classList.add('hidden');
+  applyFiltersAndSorts();
+}
+
+function clearColumnFilter() {
+  delete columnFilters[currentFilterColumn];
+  document.getElementById('column-filter-menu').classList.add('hidden');
+  applyFiltersAndSorts();
+}
+
+function clearAllFilters() {
+  columnFilters = {};
+  columnSorts = {};
+  applyFiltersAndSorts();
+}
+
+function applyFiltersAndSorts() {
+  // Apply filters
+  if (Object.keys(columnFilters).length === 0) {
+    filteredTransactions = [...allTransactions];
+  } else {
+    filteredTransactions = allTransactions.filter(txn => {
+      return Object.entries(columnFilters).every(([column, filter]) => {
+        const txValue = txn[column];
+        const filterValue = filter.value;
+        const filterValue2 = filter.value2;
+        
+        switch (filter.operator) {
+          case 'equals':
+            return txValue == filterValue;
+          case 'not_equals':
+            return txValue != filterValue;
+          case 'contains':
+            return String(txValue).toLowerCase().includes(String(filterValue).toLowerCase());
+          case 'not_contains':
+            return !String(txValue).toLowerCase().includes(String(filterValue).toLowerCase());
+          case 'starts_with':
+            return String(txValue).toLowerCase().startsWith(String(filterValue).toLowerCase());
+          case 'ends_with':
+            return String(txValue).toLowerCase().endsWith(String(filterValue).toLowerCase());
+          case 'greater_than':
+            return parseFloat(txValue) > parseFloat(filterValue);
+          case 'less_than':
+            return parseFloat(txValue) < parseFloat(filterValue);
+          case 'greater_equal':
+            return parseFloat(txValue) >= parseFloat(filterValue);
+          case 'less_equal':
+            return parseFloat(txValue) <= parseFloat(filterValue);
+          case 'before':
+            return txValue < filterValue;
+          case 'after':
+            return txValue > filterValue;
+          case 'between':
+            return txValue >= filterValue && txValue <= filterValue2;
+          case 'outside':
+            return txValue < filterValue || txValue > filterValue2;
+          default:
+            return true;
+        }
+      });
+    });
+  }
+  
+  // Apply sorts
+  const sortedColumns = Object.entries(columnSorts).filter(([_, sort]) => sort !== null);
+  
+  if (sortedColumns.length === 0) {
+    // Default sort by date descending
+    filteredTransactions.sort((a, b) => b.Date.localeCompare(a.Date));
+  } else {
+    filteredTransactions.sort((a, b) => {
+      for (const [column, direction] of sortedColumns) {
+        let valA = a[column];
+        let valB = b[column];
+        
+        const isNumeric = column === 'Amount';
+        if (isNumeric) {
+          valA = parseFloat(valA);
+          valB = parseFloat(valB);
+        }
+        
+        let comparison = 0;
+        if (isNumeric) {
+          comparison = valA - valB;
+        } else {
+          comparison = valA.localeCompare(valB);
+        }
+        
+        if (comparison !== 0) {
+          return direction === 'asc' ? comparison : -comparison;
+        }
+      }
+      return 0;
+    });
+  }
+  
+  renderTable(filteredTransactions);
+  saveState();
+}
+
+function updateActiveFiltersDisplay() {
+  const container = document.getElementById('active-filters');
+  const list = document.getElementById('active-filters-list');
+  
+  const filters = Object.entries(columnFilters);
+  if (filters.length === 0) {
+    container.classList.add('hidden');
+    return;
+  }
+  
+  container.classList.remove('hidden');
+  
+  list.innerHTML = filters.map(([column, filter]) => {
+    const colDef = COLUMNS.find(c => c.key === column);
+    let filterText;
+    
+    if (filter.operator === 'between' && filter.value2) {
+      filterText = `${colDef.label}: ${filter.value} to ${filter.value2}`;
+    } else if (filter.operator === 'outside' && filter.value2) {
+      filterText = `${colDef.label}: outside ${filter.value} to ${filter.value2}`;
+    } else {
+      filterText = `${colDef.label}: ${filter.operator} ${filter.value}`;
+    }
+    
+    return `
+      <span class="bg-slate-700 text-slate-300 px-2 py-1 rounded text-xs flex items-center gap-2">
+        ${filterText}
+        <button onclick="clearColumnFilterByColumn('${column}')" class="text-slate-400 hover:text-slate-200">×</button>
+      </span>
+    `;
+  }).join('');
+}
+
+function clearColumnFilterByColumn(column) {
+  delete columnFilters[column];
+  applyFiltersAndSorts();
+}
+
+function resetAll() {
+  clearAllFilters();
+  localStorage.removeItem('transactionFilters');
+  localStorage.removeItem('transactionSorts');
+  loadTransactions();
+}
+
+function openEditModal(transactionId) {
+  const transaction = allTransactions.find(t => t.transaction_id === transactionId);
+  if (!transaction) return;
+  
+  currentEditingTransaction = transaction;
+  
+  document.getElementById('edit-transaction-id').value = transaction.transaction_id;
+  document.getElementById('edit-transaction-source').value = transaction.source;
+  document.getElementById('edit-date').value = transaction.Date;
+  document.getElementById('edit-account').value = transaction.Account;
+  document.getElementById('edit-description').value = transaction.Description || '';
+  document.getElementById('edit-category').value = transaction.Category || '';
+  document.getElementById('edit-amount').value = transaction.Amount;
+  
+  const isManual = transaction.source === 'manual';
+  const title = document.getElementById('edit-modal-title');
+  const excludeBtn = document.getElementById('exclude-btn');
+  const deleteBtn = document.getElementById('delete-btn');
+  
+  if (isManual) {
+    title.textContent = 'Edit Manual Transaction';
+    // Make all fields editable for manual transactions
+    document.getElementById('edit-date').readOnly = false;
+    document.getElementById('edit-account').readOnly = false;
+    document.getElementById('edit-description').readOnly = false;
+    document.getElementById('edit-category').readOnly = false;
+    document.getElementById('edit-amount').readOnly = false;
+    
+    // Hide all readonly indicators
+    document.getElementById('edit-date-readonly-indicator').classList.add('hidden');
+    document.getElementById('edit-account-readonly-indicator').classList.add('hidden');
+    document.getElementById('edit-description-readonly-indicator').classList.add('hidden');
+    document.getElementById('edit-category-readonly-indicator').classList.add('hidden');
+    document.getElementById('edit-amount-readonly-indicator').classList.add('hidden');
+    
+    // Show delete button, hide exclude button
+    excludeBtn.classList.add('hidden');
+    deleteBtn.classList.remove('hidden');
+  } else {
+    title.textContent = 'Edit Transaction';
+    // Only description and category editable for Plaid transactions
+    document.getElementById('edit-date').readOnly = true;
+    document.getElementById('edit-account').readOnly = true;
+    document.getElementById('edit-description').readOnly = false;
+    document.getElementById('edit-category').readOnly = false;
+    document.getElementById('edit-amount').readOnly = true;
+    
+    // Show readonly indicators appropriately
+    document.getElementById('edit-date-readonly-indicator').classList.remove('hidden');
+    document.getElementById('edit-account-readonly-indicator').classList.remove('hidden');
+    document.getElementById('edit-description-readonly-indicator').classList.add('hidden');
+    document.getElementById('edit-category-readonly-indicator').classList.add('hidden');
+    document.getElementById('edit-amount-readonly-indicator').classList.remove('hidden');
+    
+    // Show exclude button, hide delete button
+    excludeBtn.classList.remove('hidden');
+    deleteBtn.classList.add('hidden');
+  }
+  
+  const modal = document.getElementById('edit-modal');
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+}
+
+function closeEditModal() {
+  const modal = document.getElementById('edit-modal');
+  modal.classList.add('hidden');
+  modal.classList.remove('flex');
+}
+
+function saveEdit(e) {
+  e.preventDefault();
+  
+  const transactionId = document.getElementById('edit-transaction-id').value;
+  const source = document.getElementById('edit-transaction-source').value;
+  
+  if (source === 'manual') {
+    // Update all fields for manual transaction
+    const transaction = {
+      transaction_id: transactionId,
+      date: document.getElementById('edit-date').value,
+      account: document.getElementById('edit-account').value,
+      description: document.getElementById('edit-description').value,
+      category: document.getElementById('edit-category').value,
+      amount: parseFloat(document.getElementById('edit-amount').value) || 0
+    };
+    
+    fetch('/api/manual/transaction', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(transaction)
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        closeEditModal();
+        loadTransactions();
+      } else {
+        alert('Failed to update: ' + (data.error || 'Unknown error'));
+      }
+    })
+    .catch(err => {
+      alert('Failed to update: ' + err.message);
+    });
+  } else {
+    // Update only description and category for Plaid transaction
+    const description = document.getElementById('edit-description').value;
+    const category = document.getElementById('edit-category').value;
+    
+    updateTransaction(transactionId, 'description', description);
+    updateTransaction(transactionId, 'category', category);
+    
+    closeEditModal();
+    loadTransactions();
+  }
+}
+
+function updateTransaction(transactionId, field, value) {
+  fetch('/api/transaction/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      transaction_id: transactionId,
+      [field]: value
+    })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (!data.success) {
+      alert('Failed to update: ' + (data.error || 'Unknown error'));
+    }
+  })
+  .catch(err => {
+    alert('Failed to update: ' + err.message);
+  });
+}
+
+function showExcludeConfirm() {
+  currentTransactionToExclude = document.getElementById('edit-transaction-id').value;
+  closeEditModal();
+  
+  const modal = document.getElementById('exclude-confirm-modal');
+  document.getElementById('exclude-confirm-input').value = '';
+  document.getElementById('confirm-exclude-btn').disabled = true;
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+}
+
+function closeExcludeConfirm() {
+  const modal = document.getElementById('exclude-confirm-modal');
+  modal.classList.add('hidden');
+  modal.classList.remove('flex');
+  currentTransactionToExclude = null;
+}
+
+function checkExcludeConfirm() {
+  const input = document.getElementById('exclude-confirm-input').value;
+  const confirmBtn = document.getElementById('confirm-exclude-btn');
+  confirmBtn.disabled = input.toLowerCase() !== 'exclude';
+}
+
+function showDeleteConfirm() {
+  currentTransactionToExclude = currentEditingTransaction.transaction_id;
+  closeEditModal();
+  
+  const modal = document.getElementById('delete-confirm-modal');
+  document.getElementById('delete-confirm-input').value = '';
+  document.getElementById('confirm-delete-btn').disabled = true;
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+}
+
+function closeDeleteConfirm() {
+  const modal = document.getElementById('delete-confirm-modal');
+  modal.classList.add('hidden');
+  modal.classList.remove('flex');
+  currentTransactionToExclude = null;
+}
+
+function checkDeleteConfirm() {
+  const input = document.getElementById('delete-confirm-input').value;
+  const confirmBtn = document.getElementById('confirm-delete-btn');
+  confirmBtn.disabled = input.toLowerCase() !== 'delete';
+}
+
+function confirmDelete() {
+  if (!currentTransactionToExclude) return;
+  
+  fetch(`/api/manual/transaction?transaction_id=${currentTransactionToExclude}`, {
+    method: 'DELETE'
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      closeDeleteConfirm();
+      loadTransactions();
+    } else {
+      alert('Failed to delete: ' + (data.error || 'Unknown error'));
+    }
+  })
+  .catch(err => {
+    alert('Failed to delete: ' + err.message);
+  });
+}
+
+function confirmExclude() {
+  if (!currentTransactionToExclude) return;
+  
+  fetch('/api/transaction/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      transaction_id: currentTransactionToExclude,
+      excluded: 1
+    })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      closeExcludeConfirm();
+      loadTransactions();
+    } else {
+      alert('Failed to exclude: ' + (data.error || 'Unknown error'));
+    }
+  })
+  .catch(err => {
+    alert('Failed to exclude: ' + err.message);
+  });
+}
+
+function openManualModal() {
+  const modal = document.getElementById('manual-modal');
+  document.getElementById('manual-date').value = new Date().toISOString().split('T')[0];
+  document.getElementById('manual-form').reset();
+  document.getElementById('manual-date').value = new Date().toISOString().split('T')[0];
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+}
+
+function closeManualModal() {
+  const modal = document.getElementById('manual-modal');
+  modal.classList.add('hidden');
+  modal.classList.remove('flex');
+}
+
+function addManualTransaction(e) {
+  e.preventDefault();
+  
+  const transaction = {
+    date: document.getElementById('manual-date').value,
+    account: document.getElementById('manual-account').value,
+    description: document.getElementById('manual-description').value,
+    category: document.getElementById('manual-category').value,
+    amount: parseFloat(document.getElementById('manual-amount').value) || 0
+  };
+  
+  fetch('/api/manual/transaction', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(transaction)
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      closeManualModal();
+      loadTransactions();
+    } else {
+      alert('Failed to add manual transaction: ' + (data.error || 'Unknown error'));
+    }
+  })
+  .catch(err => {
+    alert('Failed to add manual transaction: ' + err.message);
+  });
+}
+</script>
+{% endblock %}

@@ -156,6 +156,26 @@ _CREATE_MANUAL_SNAPSHOT_ACCOUNT_INDEX = """
     ON manual_account_snapshots(account_id);
 """
 
+_CREATE_NET_WORTH_HISTORY_TABLE = """
+    CREATE TABLE IF NOT EXISTS net_worth_history (
+        snapshot_date TEXT PRIMARY KEY,
+        net_worth REAL NOT NULL,
+        last_updated TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+"""
+
+_CREATE_MANUAL_TRANSACTIONS_TABLE = """
+    CREATE TABLE IF NOT EXISTS manual_transactions (
+        transaction_id TEXT PRIMARY KEY,
+        date TEXT NOT NULL,
+        account TEXT NOT NULL,
+        description TEXT,
+        category TEXT,
+        amount REAL NOT NULL,
+        last_updated TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+"""
+
 
 # ─── Connection Management ─────────────────────────────────────────────────────
 
@@ -248,6 +268,12 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         # Initialize manual account snapshots table
         init_manual_account_snapshots(db_path)
 
+        # Initialize net worth history table
+        init_net_worth_history(db_path)
+
+        # Initialize manual transactions table
+        init_manual_transactions(db_path)
+
     logger.info("Database schema initialized successfully.")
 
 
@@ -294,9 +320,244 @@ def init_manual_account_snapshots(db_path: Path = DATABASE_PATH) -> None:
     logger.debug("Manual account snapshots table initialized successfully.")
 
 
+def init_net_worth_history(db_path: Path = DATABASE_PATH) -> None:
+    """
+    Create the net_worth_history table if it doesn't already exist.
+
+    Safe to call on every startup — all DDL uses IF NOT EXISTS. No data
+    is altered when called against an existing populated database.
+
+    Args:
+        db_path: Path to the SQLite database file.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping net worth history init.")
+        return
+
+    with _get_connection(db_path) as conn:
+        conn.execute(_CREATE_NET_WORTH_HISTORY_TABLE)
+
+    logger.debug("Net worth history table initialized successfully.")
+
+
+def init_manual_transactions(db_path: Path = DATABASE_PATH) -> None:
+    """
+    Create the manual_transactions table if it doesn't already exist.
+
+    Safe to call on every startup — all DDL uses IF NOT EXISTS. No data
+    is altered when called against an existing populated database.
+
+    Args:
+        db_path: Path to the SQLite database file.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping manual transactions init.")
+        return
+
+    with _get_connection(db_path) as conn:
+        conn.execute(_CREATE_MANUAL_TRANSACTIONS_TABLE)
+
+    logger.debug("Manual transactions table initialized successfully.")
+
+
+def upsert_manual_transaction(transaction: dict, db_path: Path = DATABASE_PATH) -> None:
+    """
+    Insert or update a manual transaction.
+
+    Args:
+        transaction: Dict with keys: transaction_id, date, account, description,
+                     category, amount
+        db_path: Path to the database.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping manual transaction upsert.")
+        return
+
+    with _get_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO manual_transactions 
+            (transaction_id, date, account, description, category, amount)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(transaction_id) DO UPDATE SET
+                date = excluded.date,
+                account = excluded.account,
+                description = excluded.description,
+                category = excluded.category,
+                amount = excluded.amount,
+                last_updated = CURRENT_TIMESTAMP
+            """,
+            (
+                transaction["transaction_id"],
+                transaction["date"],
+                transaction["account"],
+                transaction.get("description", ""),
+                transaction.get("category", ""),
+                transaction["amount"],
+            ),
+        )
+
+    logger.debug(f"Upserted manual transaction: {transaction.get('transaction_id')}")
+
+
+def get_manual_transactions(db_path: Path = DATABASE_PATH) -> list[dict]:
+    """
+    Get all manual transactions.
+
+    Args:
+        db_path: Path to the database.
+
+    Returns:
+        List of manual transaction dicts ordered by date DESC.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — get_manual_transactions returning empty list.")
+        return []
+
+    with _get_connection(db_path) as conn:
+        cursor = conn.execute(
+            """
+            SELECT * FROM manual_transactions
+            ORDER BY date DESC
+            """
+        )
+        rows = cursor.fetchall()
+
+    logger.debug(f"Retrieved {len(rows)} manual transaction(s).")
+    return [dict(row) for row in rows]
+
+
+def delete_manual_transaction(transaction_id: str, db_path: Path = DATABASE_PATH) -> bool:
+    """
+    Delete a manual transaction.
+
+    Args:
+        transaction_id: ID of the transaction to delete.
+        db_path: Path to the database.
+
+    Returns:
+        True if successful, False otherwise.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping manual transaction deletion.")
+        return False
+
+    with _get_connection(db_path) as conn:
+        conn.execute(
+            "DELETE FROM manual_transactions WHERE transaction_id = ?",
+            (transaction_id,),
+        )
+
+    logger.debug(f"Deleted manual transaction: {transaction_id}")
+    return True
+
+
+def recalculate_net_worth_history(from_date: str = None, db_path: Path = DATABASE_PATH) -> None:
+    """
+    Recalculate net worth history for all dates (or from a specific date forward).
+    
+    This is called when manual snapshots are added/updated to ensure net worth
+    calculations reflect the new balances for all subsequent dates.
+    
+    Args:
+        from_date: Optional date string in YYYY-MM-DD format to start recalculating from.
+                   If None, recalculates all history.
+        db_path: Path to the database.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping net worth history recalculation.")
+        return
+
+    with _get_connection(db_path) as conn:
+        # Delete existing history that will be recalculated
+        if from_date:
+            conn.execute("DELETE FROM net_worth_history WHERE snapshot_date >= ?", (from_date,))
+        else:
+            conn.execute("DELETE FROM net_worth_history")
+        
+        # Calculate net worth for each date
+        if from_date:
+            conn.execute(
+                """
+                WITH combined_balances AS (
+                    SELECT 
+                        snapshot_date,
+                        account_type,
+                        current_balance
+                    FROM account_snapshots
+                    WHERE snapshot_date >= ?
+                    
+                    UNION ALL
+                    
+                    SELECT 
+                        snapshot_date,
+                        account_type,
+                        current_balance
+                    FROM manual_account_snapshots
+                    WHERE snapshot_date >= ?
+                )
+                INSERT INTO net_worth_history (snapshot_date, net_worth)
+                SELECT
+                    snapshot_date,
+                    SUM(CASE
+                        WHEN account_type IN ('depository', 'investment')
+                        THEN COALESCE(current_balance, 0)
+                        WHEN account_type IN ('credit', 'loan')
+                        THEN -COALESCE(current_balance, 0)
+                        ELSE 0
+                    END) as net_worth
+                FROM combined_balances
+                GROUP BY snapshot_date
+                ON CONFLICT(snapshot_date) DO UPDATE SET net_worth = excluded.net_worth
+                """,
+                (from_date, from_date),
+            )
+        else:
+            conn.execute(
+                """
+                WITH combined_balances AS (
+                    SELECT 
+                        snapshot_date,
+                        account_type,
+                        current_balance
+                    FROM account_snapshots
+                    
+                    UNION ALL
+                    
+                    SELECT 
+                        snapshot_date,
+                        account_type,
+                        current_balance
+                    FROM manual_account_snapshots
+                )
+                INSERT INTO net_worth_history (snapshot_date, net_worth)
+                SELECT
+                    snapshot_date,
+                    SUM(CASE
+                        WHEN account_type IN ('depository', 'investment')
+                        THEN COALESCE(current_balance, 0)
+                        WHEN account_type IN ('credit', 'loan')
+                        THEN -COALESCE(current_balance, 0)
+                        ELSE 0
+                    END) as net_worth
+                FROM combined_balances
+                GROUP BY snapshot_date
+                ON CONFLICT(snapshot_date) DO UPDATE SET net_worth = excluded.net_worth
+                """
+            )
+        
+        conn.commit()
+
+    logger.debug(f"Net worth history recalculated from {from_date or 'beginning'}.")
+
+
 # ─── Write Operations ──────────────────────────────────────────────────────────
 
 # Smart upsert SQL — defined once to avoid drift.
+#
+# IMPORTANT: This system preserves all historical data indefinitely.
+# Transactions are NEVER automatically deleted based on age.
+# Only manual database deletion can remove transactions.
 #
 # INSERT behaviour (new transaction_id):
 #   All fields are written, including user_category from the categorizer.
@@ -306,6 +567,12 @@ def init_manual_account_snapshots(db_path: Path = DATABASE_PATH) -> None:
 #   plaid_category, plaid_category_primary, amount, pending, institution, last_updated).
 #   user_category and excluded are intentionally OMITTED from the SET clause so
 #   manual edits made directly in the database survive every subsequent sync.
+#
+#   This allows you to:
+#   - Manually categorize one-off transactions that don't fit rules
+#   - Edit user_category directly in the database for custom categorization
+#   - Set excluded=1 to hide transactions without deleting them
+#   - Have these manual edits persist through all future syncs
 #
 #   The WHERE clause uses IS NOT (NULL-safe) to skip the update entirely when
 #   none of the Plaid fields have changed, keeping last_updated pristine and
@@ -803,18 +1070,15 @@ def get_balance_history(days: int = 90, db_path: Path = DATABASE_PATH) -> list[d
 
 def get_net_worth_history(db_path: Path = DATABASE_PATH) -> list[dict]:
     """
-    Return net worth history aggregated by snapshot date.
+    Return net worth history from both Plaid and manual snapshots.
 
-    Aggregates by snapshot_date:
-      - assets      = SUM of depository + investment balances
-      - liabilities = SUM of credit + loan balances (as positive)
-      - net_worth   = assets - liabilities
+    Calculates on the fly to always include the latest manual snapshots.
 
     Args:
         db_path: Path to the database.
 
     Returns:
-        List of dicts with keys: snapshot_date, assets, liabilities, net_worth.
+        List of dicts with keys: snapshot_date, net_worth.
         Ordered by snapshot_date ASC. Returns empty list if database is disabled
         or no snapshots exist.
     """
@@ -823,22 +1087,39 @@ def get_net_worth_history(db_path: Path = DATABASE_PATH) -> list[dict]:
         return []
 
     with _get_connection(db_path) as conn:
+        # Calculate on the fly from both snapshot tables
         cursor = conn.execute(
             """
-            SELECT
-                snapshot_date,
-                SUM(CASE
-                    WHEN account_type IN ('depository', 'investment')
-                    THEN COALESCE(current_balance, 0)
-                    ELSE 0
-                END) as assets,
-                SUM(CASE
-                    WHEN account_type IN ('credit', 'loan')
-                    THEN COALESCE(current_balance, 0)
-                    ELSE 0
-                END) as liabilities
-            FROM account_snapshots
-            GROUP BY snapshot_date
+            WITH combined_balances AS (
+                SELECT 
+                    snapshot_date,
+                    account_type,
+                    current_balance
+                FROM account_snapshots
+                
+                UNION ALL
+                
+                SELECT 
+                    snapshot_date,
+                    account_type,
+                    current_balance
+                FROM manual_account_snapshots
+            ),
+            daily_net_worth AS (
+                SELECT
+                    snapshot_date,
+                    SUM(CASE
+                        WHEN account_type IN ('depository', 'investment')
+                        THEN COALESCE(current_balance, 0)
+                        WHEN account_type IN ('credit', 'loan')
+                        THEN -COALESCE(current_balance, 0)
+                        ELSE 0
+                    END) as net_worth
+                FROM combined_balances
+                GROUP BY snapshot_date
+            )
+            SELECT snapshot_date, net_worth
+            FROM daily_net_worth
             ORDER BY snapshot_date ASC
             """
         )
@@ -846,13 +1127,9 @@ def get_net_worth_history(db_path: Path = DATABASE_PATH) -> list[dict]:
 
     result = []
     for row in rows:
-        assets = row['assets'] or 0
-        liabilities = row['liabilities'] or 0
         result.append({
             'snapshot_date': row['snapshot_date'],
-            'assets': assets,
-            'liabilities': liabilities,
-            'net_worth': assets - liabilities,
+            'net_worth': row['net_worth'] or 0,
         })
 
     logger.debug(f"Retrieved net worth history for {len(result)} date(s).")

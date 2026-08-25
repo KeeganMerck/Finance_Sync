@@ -116,15 +116,15 @@ function renderCards(data) {
     },
     {
       label: 'Projected Annual Income',
-      value: fmtAmt(Math.abs(data.total_projected_income)),
-      sub: fmtAmt(Math.abs(data.total_projected_income) / 12) + ' / mo avg',
+      value: fmtAmt(data.total_projected_income),
+      sub: fmtAmt(data.total_projected_income / 12) + ' / mo avg',
       color: 'text-emerald-400',
     },
     {
       label: 'Projected Net',
-      value: fmtAmt(Math.abs(data.projected_net)),
-      sub: data.projected_net < 0 ? 'projected savings' : 'projected deficit',
-      color: data.projected_net < 0 ? 'text-sky-400' : 'text-red-400',
+      value: fmtAmt(data.projected_net),
+      sub: data.projected_net >= 0 ? 'projected savings' : 'projected deficit',
+      color: data.projected_net >= 0 ? 'text-sky-400' : 'text-red-400',
     },
   ];
 
@@ -177,7 +177,7 @@ function renderTable(data) {
         ${amtSpan(data.total_projected_income / 12)}
       </td>
       <td class="bg-slate-950 text-right px-4 py-2.5 text-xs font-bold">
-        <span class="text-emerald-400">${fmtAmt(Math.abs(data.total_projected_income))}</span>
+        <span class="text-emerald-400">${fmtAmt(data.total_projected_income)}</span>
       </td>
     </tr>
     <tr>
@@ -202,7 +202,9 @@ function renderTable(data) {
 /* ─── Bar chart ─────────────────────────────────────────────────── */
 function renderChart(data) {
   const canvas = document.getElementById('chart-proj');
-  const visible = data.rows.filter(r => Math.abs(r.projected_annual) > 0.01).slice(0, 15);
+  const visible = data.rows.filter(r => Math.abs(r.projected_annual) > 0.01)
+    .sort((a, b) => Math.abs(b.projected_annual) - Math.abs(a.projected_annual))
+    .slice(0, 15);
 
   if (projChart) projChart.destroy();
   projChart = new Chart(canvas, {
@@ -212,8 +214,8 @@ function renderChart(data) {
       datasets: [{
         label: 'Projected Annual',
         data: visible.map(r => r.projected_annual),
-        backgroundColor: visible.map(r => r.projected_annual > 0
-          ? 'rgba(248,113,113,0.75)' : 'rgba(74,222,128,0.75)'),
+        backgroundColor: visible.map(r => r.projected_annual >= 0
+          ? 'rgba(74,222,128,0.75)' : 'rgba(248,113,113,0.75)'),
         borderRadius: 4,
         borderSkipped: false,
       }]

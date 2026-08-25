@@ -124,6 +124,11 @@ def _fetch_from_plaid() -> list[dict]:
            - Existing institution: start_date = (latest date for that institution) - ROLLING_SYNC_DAYS
              This is a short rolling window (default 14 days) that catches
              pending→posted transitions and recent corrections efficiently.
+             
+             IMPORTANT: This does NOT delete old data from the database. Historical
+             transactions are preserved indefinitely. ROLLING_SYNC_DAYS only affects
+             how far back we fetch from the Plaid API to check for changes.
+             
         2. Fetches transactions from Plaid for [start_date, today]
         3. Resolves account IDs to human-readable account names
         4. Tags each transaction with the institution name
@@ -183,6 +188,10 @@ def _fetch_from_plaid() -> list[dict]:
                     #   - An existing institution uses a short rolling window
                     #     (ROLLING_SYNC_DAYS) to catch pending→posted changes and
                     #     any recent corrections without re-downloading full history.
+                    #
+                    # IMPORTANT: Historical data in the database is NEVER automatically
+                    # deleted. ROLLING_SYNC_DAYS only affects how far back we fetch
+                    # from the Plaid API. Manual database edits are preserved.
                     #
                     latest_db_date = get_latest_transaction_date_for_institution(institution_name)
 

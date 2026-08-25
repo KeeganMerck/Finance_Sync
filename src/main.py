@@ -65,9 +65,17 @@ def configure_logging() -> None:
 
 # ─── Pipeline ──────────────────────────────────────────────────────────────────
 
-def run_pipeline() -> None:
+def run_pipeline(enable_sheets: bool = True) -> None:
     """
     Execute the full finance sync pipeline end-to-end.
+
+    Args:
+        enable_sheets: When False, skip all Google Sheets exports (both
+            transaction and balance tabs). Used by the dashboard entry point
+            so that ``python -m src.dashboard`` doesn't require Sheets
+            credentials and avoids the write quota. Pass True (default) to
+            get the full behaviour, i.e. when called from
+            ``python -m src.google_sheets``.
 
     Exits with sys.exit(1) on fatal errors in load or export stages.
     Database errors are non-fatal (logged as warnings) so exports still run
@@ -131,9 +139,12 @@ def run_pipeline() -> None:
             upserted = upsert_balance_snapshots(all_balances)
             logger.info(f"  Upserted {upserted} total account balance snapshot(s) to SQLite.")
 
-            # Export to Google Sheets
-            balance_export_summary = export_balances_to_sheets(dry_run=DRY_RUN)
-            logger.info(f"  Balance export: {balance_export_summary}")
+            # Export to Google Sheets (skipped when enable_sheets=False)
+            if enable_sheets:
+                balance_export_summary = export_balances_to_sheets(dry_run=DRY_RUN)
+                logger.info(f"  Balance export: {balance_export_summary}")
+            else:
+                logger.info("  Balance Sheets export skipped (sheets disabled for this run).")
         else:
             logger.info("  No balance data (Plaid or manual) — skipping storage and export.")
     except Exception:
@@ -213,19 +224,22 @@ def run_pipeline() -> None:
         logger.exception("Fatal: export failed.")
         sys.exit(1)
 
-    logger.info("Refreshing Google Sheets table...")
-    try:
-        if not DRY_RUN and GOOGLE_SHEETS_ENABLED:
-            # Use the already-categorized transactions instead of fetching from DB
-            # This ensures excluded transactions are filtered out
-            sheet_rows = update_google_sheet(transactions)
-            logger.info(f"  Updated Google Sheets with {sheet_rows} row(s).")
-        elif DRY_RUN:
-            logger.info("  Dry run enabled — skipping Google Sheets update.")
-        else:
-            logger.info("  Google Sheets export disabled via config.")
-    except Exception:
-        logger.exception("Non-fatal: Google Sheets update failed.")
+    if enable_sheets:
+        logger.info("Refreshing Google Sheets table...")
+        try:
+            if not DRY_RUN and GOOGLE_SHEETS_ENABLED:
+                # Use the already-categorized transactions instead of fetching from DB
+                # This ensures excluded transactions are filtered out
+                sheet_rows = update_google_sheet(transactions)
+                logger.info(f"  Updated Google Sheets with {sheet_rows} row(s).")
+            elif DRY_RUN:
+                logger.info("  Dry run enabled — skipping Google Sheets update.")
+            else:
+                logger.info("  Google Sheets export disabled via config.")
+        except Exception:
+            logger.exception("Non-fatal: Google Sheets update failed.")
+    else:
+        logger.info("Stage 5/5 — Google Sheets skipped (sheets disabled for this run).")
 
     # ── Summary ───────────────────────────────────────────────────────────────
 

@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block title %}Investments — Finance{% endblock %}
+
+{% block content %}
+<div class="space-y-8 fade-in">
+  <div>
+    <h1 class="text-2xl font-bold text-slate-100">Investments</h1>
+    <p class="text-sm text-slate-400 mt-1">Portfolio holdings, performance, and investment activity</p>
+  </div>
+
+  <div id="investment-cards" class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+    {% for _ in range(4) %}
+    <div class="bg-surface rounded-xl p-5 border border-slate-700 animate-pulse">
+      <div class="h-3 bg-slate-700 rounded w-1/2 mb-3"></div>
+      <div class="h-7 bg-slate-700 rounded w-3/4"></div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="bg-surface rounded-xl border border-slate-700">
+    <div class="px-6 py-4 border-b border-slate-700 flex flex-wrap gap-2">
+      <button class="investment-tab active-tab" data-tab="holdings">Current Holdings</button>
+      <button class="investment-tab" data-tab="activity">Investment Activity</button>
+      <button class="investment-tab" data-tab="history">Portfolio History</button>
+    </div>
+
+    <div id="holdings-panel" class="investment-panel">
+      <div class="px-6 py-4 flex flex-col md:flex-row gap-3 border-b border-slate-700">
+        <input id="holding-search" type="search" placeholder="Search symbol, security, or institution…"
+               class="flex-1 bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+        <select id="holding-account" class="bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+          <option value="">All accounts</option>
+        </select>
+        <button id="holding-reset" class="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm text-slate-300">Reset</button>
+      </div>
+      <div class="table-scroll">
+        <div id="holdings-table" class="p-4"><div class="spinner"></div></div>
+      </div>
+    </div>
+
+    <div id="activity-panel" class="investment-panel hidden">
+      <div class="px-6 py-4 flex flex-col md:flex-row gap-3 border-b border-slate-700">
+        <input id="activity-search" type="search" placeholder="Search security, name, type, or institution…"
+               class="flex-1 bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+        <select id="activity-type" class="bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+          <option value="">All activity types</option>
+        </select>
+        <button id="activity-reset" class="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm text-slate-300">Reset</button>
+      </div>
+      <div class="table-scroll">
+        <div id="activity-table" class="p-4"><div class="spinner"></div></div>
+      </div>
+    </div>
+
+    <div id="history-panel" class="investment-panel hidden">
+      <div class="p-6">
+        <canvas id="investment-history-chart" height="90"></canvas>
+      </div>
+      <div class="table-scroll border-t border-slate-700">
+        <div id="history-table" class="p-4"></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+  .investment-tab { padding:.45rem .8rem; border-radius:.45rem; color:#94a3b8; font-size:.875rem; }
+  .investment-tab:hover { color:#f1f5f9; background:#334155; }
+  .active-tab { background:rgba(139,92,246,.2); color:#c4b5fd; font-weight:600; }
+  .sortable { cursor:pointer; user-select:none; }
+  .sortable:hover { color:#38bdf8; }
+</style>
+<script>
+let investmentData = null;
+let holdingSort = { key: 'current_value', direction: 'desc' };
+let activitySort = { key: 'date', direction: 'desc' };
+let investmentHistoryChart = null;
+
+const holdingColumns = [
+  ['symbol','Symbol','text'], ['name','Security','text'], ['account_name','Account','text'],
+  ['quantity','Quantity','number'], ['current_price','Price','number'],
+  ['current_value','Value','number'], ['cost_basis','Cost Basis','number'],
+  ['gain_loss','Gain / Loss','number'], ['gain_loss_percent','Return','number']
+];
+const activityColumns = [
+  ['date','Date','text'], ['institution','Institution','text'], ['account_name','Account','text'],
+  ['name','Description','text'], ['type','Type','text'], ['subtype','Subtype','text'],
+  ['quantity','Quantity','number'], ['amount','Amount','number'], ['price','Price','number'], ['fees','Fees','number']
+];
+
+function safe(v) {
+  return String(v ?? '—').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function number(v) { return Number(v || 0); }
+function sortRows(rows, sort) {
+  return [...rows].sort((a,b) => {
+    let x = a[sort.key], y = b[sort.key];
+    if (typeof x === 'number' || typeof y === 'number') {
+      x = number(x); y = number(y);
+    } else { x = String(x ?? '').toLowerCase(); y = String(y ?? '').toLowerCase(); }
+    const result = x < y ? -1 : x > y ? 1 : 0;
+    return sort.direction === 'asc' ? result : -result;
+  });
+}
+function toggleSort(sort, key) {
+  if (sort.key === key) sort.direction = sort.direction === 'asc' ? 'desc' : 'asc';
+  else { sort.key = key; sort.direction = 'desc'; }
+}
+function heading(key, label, sort) {
+  const mark = sort.key === key ? (sort.direction === 'asc' ? ' ↑' : ' ↓') : '';
+  return `<th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 font-medium whitespace-nowrap border-b border-slate-700 sortable" onclick="sortInvestment('${sort === holdingSort ? 'holding' : 'activity'}','${key}')">${label}${mark}</th>`;
+}
+function amount(v, positiveIsGood = false) {
+  const n = number(v);
+  const cls = positiveIsGood ? (n >= 0 ? 'text-emerald-400' : 'text-red-400') : (n > 0 ? 'text-slate-200' : n < 0 ? 'text-emerald-400' : 'text-slate-400');
+  return `<span class="${cls}">${fmtAmt(n)}</span>`;
+}
+
+function renderCards(s) {
+  const gainClass = number(s.gain_loss) >= 0 ? 'text-emerald-400' : 'text-red-400';
+  document.getElementById('investment-cards').innerHTML = [
+    ['Portfolio Value', fmtAmt(s.current_value), 'text-violet-400'],
+    ['Cost Basis', fmtAmt(s.cost_basis), 'text-slate-100'],
+    ['Gain / Loss', amount(s.gain_loss, true), gainClass],
+    ['Holdings', `${s.holding_count} <span class="text-xs text-slate-500 font-normal">across ${s.account_count} account${s.account_count === 1 ? '' : 's'}</span>`, 'text-sky-400']
+  ].map(c => `<div class="bg-surface rounded-xl p-5 border border-slate-700">
+    <p class="text-xs text-slate-500 uppercase tracking-wider mb-2">${c[0]}</p>
+    <p class="text-2xl font-bold ${c[2]}">${c[1]}</p>
+    ${c[0] === 'Gain / Loss' && s.gain_loss_percent != null ? `<p class="text-xs text-slate-500 mt-1">${s.gain_loss_percent.toFixed(2)}% return</p>` : ''}
+  </div>`).join('');
+}
+
+function renderHoldings() {
+  const q = document.getElementById('holding-search').value.toLowerCase();
+  const account = document.getElementById('holding-account').value;
+  let rows = investmentData.holdings.filter(h =>
+    (!account || h.account_id === account) &&
+    (!q || [h.symbol,h.name,h.institution,h.account_name].some(v => String(v||'').toLowerCase().includes(q)))
+  );
+  rows = sortRows(rows, holdingSort);
+  const head = holdingColumns.map(c => heading(c[0], c[1], holdingSort)).join('');
+  const body = rows.map((h,i) => `<tr>
+    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-sm font-medium text-violet-300 whitespace-nowrap">${safe(h.symbol)}</td>
+    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-sm text-slate-300 whitespace-nowrap">${safe(h.name)}</td>
+    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-xs text-slate-400 whitespace-nowrap">${safe(h.account_name)}</td>
+    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs">${number(h.quantity).toFixed(4)}</td>
+    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs">${amount(h.current_price)}</td>
+    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs font-semibold">${amount(h.current_value)}</td>
+    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs">${amount(h.cost_basis)}</td>
+    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs">${amount(h.gain_loss,true)}</td>
+    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs ${number(h.gain_loss_percent)>=0?'text-emerald-400':'text-red-400'}">${h.gain_loss_percent == null ? '—' : number(h.gain_loss_percent).toFixed(2)+'%'}</td>
+  </tr>`).join('');
+  document.getElementById('holdings-table').innerHTML = rows.length ? `<table class="w-full text-xs border-collapse"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table><p class="text-xs text-slate-500 mt-4">Showing ${rows.length} of ${investmentData.holdings.length} holdings · Snapshot ${safe(investmentData.summary.as_of)}</p>` : '<p class="text-sm text-slate-500 p-2">No holdings match the selected filters.</p>';
+}
+
+function renderActivity() {
+  const q = document.getElementById('activity-search').value.toLowerCase();
+  const type = document.getElementById('activity-type').value;
+  let rows = investmentData.transactions.filter(t =>
+    (!type || t.type === type) &&
+    (!q || [t.name,t.institution,t.account_name,t.type,t.subtype,t.symbol].some(v => String(v||'').toLowerCase().includes(q)))
+  );
+  rows = sortRows(rows, activitySort);
+  const head = activityColumns.map(c => heading(c[0], c[1], activitySort)).join('');
+  const body = rows.map((t,i) => `<tr>
+    ${activityColumns.map(c => {
+      const v = t[c[0]];
+      let value = c[0] === 'amount' || c[0] === 'price' || c[0] === 'fees' ? amount(v) : c[2] === 'number' ? number(v).toFixed(4) : safe(v);
+      return `<td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-xs ${c[0]==='name'?'text-slate-300 min-w-[260px]':'text-slate-400 whitespace-nowrap'} ${['amount','price','fees','quantity'].includes(c[0])?'text-right':''}">${value}</td>`;
+    }).join('')}
+  </tr>`).join('');
+  document.getElementById('activity-table').innerHTML = rows.length ? `<table class="w-full text-xs border-collapse"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table><p class="text-xs text-slate-500 mt-4">Showing ${rows.length} of ${investmentData.transactions.length} investment transactions</p>` : '<p class="text-sm text-slate-500 p-2">No investment activity matches the selected filters.</p>';
+}
+
+function renderHistory() {
+  const history = investmentData.history;
+  if (!history.length) {
+    document.getElementById('history-table').innerHTML = '<p class="text-sm text-slate-500 p-2">No holdings history available.</p>';
+    return;
+  }
+  document.getElementById('history-table').innerHTML = `<table class="w-full text-xs border-collapse">
+    <thead><tr><th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 border-b border-slate-700">Snapshot Date</th><th class="bg-surface text-right text-xs text-slate-400 px-4 py-2.5 border-b border-slate-700">Portfolio Value</th><th class="bg-surface text-right text-xs text-slate-400 px-4 py-2.5 border-b border-slate-700">Cost Basis</th><th class="bg-surface text-right text-xs text-slate-400 px-4 py-2.5 border-b border-slate-700">Gain / Loss</th></tr></thead>
+    <tbody>${[...history].reverse().map((h,i) => `<tr><td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-slate-300">${safe(h.snapshot_date)}</td><td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right">${amount(h.current_value)}</td><td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right">${amount(h.cost_basis)}</td><td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right">${amount(h.gain_loss,true)}</td></tr>`).join('')}</tbody>
+  </table>`;
+  if (investmentHistoryChart) investmentHistoryChart.destroy();
+  investmentHistoryChart = new Chart(document.getElementById('investment-history-chart'), {
+    type:'line', data:{labels:history.map(h=>h.snapshot_date), datasets:[{label:'Portfolio Value',data:history.map(h=>h.current_value),borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.12)',fill:true,tension:.35,pointRadius:2}]},
+    options:{responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmtAmt(c.raw)}}},scales:{x:{grid:{color:'#1e293b'},ticks:{maxTicksLimit:10}},y:{grid:{color:'#334155'},ticks:{callback:v=>fmtK(v)}}}}
+  });
+}
+
+function sortInvestment(kind, key) {
+  const sort = kind === 'holding' ? holdingSort : activitySort;
+  toggleSort(sort, key);
+  kind === 'holding' ? renderHoldings() : renderActivity();
+}
+function resetHoldings() { document.getElementById('holding-search').value=''; document.getElementById('holding-account').value=''; renderHoldings(); }
+function resetActivity() { document.getElementById('activity-search').value=''; document.getElementById('activity-type').value=''; renderActivity(); }
+
+fetch('/api/investments').then(r=>r.json()).then(data => {
+  if (data.error) throw new Error(data.error);
+  investmentData = data;
+  renderCards(data.summary);
+  [...new Set(data.accounts.map(a=>a.account_id))].forEach(id => {
+    const a = data.accounts.find(x=>x.account_id===id);
+    document.getElementById('holding-account').innerHTML += `<option value="${safe(id)}">${safe(a.account_name || id)}</option>`;
+  });
+  [...new Set(data.transactions.map(t=>t.type).filter(Boolean))].sort().forEach(type => {
+    document.getElementById('activity-type').innerHTML += `<option value="${safe(type)}">${safe(type)}</option>`;
+  });
+  renderHoldings(); renderActivity(); renderHistory();
+}).catch(() => {
+  document.getElementById('investment-cards').innerHTML = '<p class="col-span-4 text-sm text-slate-500">Investment data could not be loaded.</p>';
+});
+
+document.getElementById('holding-search').addEventListener('input', renderHoldings);
+document.getElementById('holding-account').addEventListener('change', renderHoldings);
+document.getElementById('holding-reset').addEventListener('click', resetHoldings);
+document.getElementById('activity-search').addEventListener('input', renderActivity);
+document.getElementById('activity-type').addEventListener('change', renderActivity);
+document.getElementById('activity-reset').addEventListener('click', resetActivity);
+document.querySelectorAll('.investment-tab').forEach(button => button.addEventListener('click', () => {
+  document.querySelectorAll('.investment-tab').forEach(b=>b.classList.remove('active-tab'));
+  document.querySelectorAll('.investment-panel').forEach(p=>p.classList.add('hidden'));
+  button.classList.add('active-tab');
+  document.getElementById(button.dataset.tab + '-panel').classList.remove('hidden');
+}));
+</script>
+{% endblock %}

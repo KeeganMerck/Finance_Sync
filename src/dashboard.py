@@ -39,6 +39,7 @@ from flask import Flask, Response, jsonify, render_template, request
 
 # ── Config ────────────────────────────────────────────────────────────────────
 from .core.config import DATABASE_PATH
+from .modules.database import init_db
 from .core.config import ROLLING_SYNC_DAYS
 
 _HERE = Path(__file__).resolve().parent
@@ -669,17 +670,93 @@ def _investment_data() -> dict:
         ORDER BY current_value DESC, symbol
         """
     )
+    imported_basis = _rows(
+        """
+        SELECT account_id, security_id,
+               SUM(CASE WHEN quantity > 0 THEN quantity ELSE 0 END) AS quantity,
+               SUM(CASE WHEN quantity > 0 THEN ABS(amount) ELSE 0 END) AS total_cost
+        FROM investment_transactions
+        WHERE LOWER(COALESCE(type, '')) IN ('buy', 'reinvestment')
+          AND quantity > 0
+        GROUP BY account_id, security_id
+        """
+    )
+    imported_by_key = {
+        (r["account_id"], r["security_id"]): r for r in imported_basis
+    }
+    basis_entries = _rows(
+        """
+        SELECT basis_id, account_id, security_id, symbol, name, quantity,
+               total_cost, purchase_date, entry_mode, notes, active,
+               created_at, updated_at
+        FROM investment_basis_entries
+        WHERE active = 1
+        ORDER BY symbol, purchase_date, basis_id
+        """
+    )
+    manual_by_key = {}
+    for entry in basis_entries:
+        key = (entry["account_id"], entry.get("security_id"), entry["symbol"])
+        manual_by_key.setdefault(key, []).append(entry)
+
     for holding in holdings:
         holding["account_name"] = account_names.get(
             holding["account_id"], holding["account_id"]
         )
-        holding["gain_loss"] = round(
-            (holding.get("current_value") or 0) - (holding.get("cost_basis") or 0), 2
+        quantity = max(holding.get("quantity") or 0, 0)
+        current_value = holding.get("current_value") or 0
+        price = holding.get("current_price") or (
+            current_value / quantity if quantity else 0
         )
-        cost_basis = holding.get("cost_basis") or 0
-        holding["gain_loss_percent"] = round(
-            holding["gain_loss"] / cost_basis * 100, 2
-        ) if cost_basis else None
+        imported = imported_by_key.get((holding["account_id"], holding["security_id"]), {})
+        imported_qty = min(quantity, max(imported.get("quantity") or 0, 0))
+        imported_cost = max(imported.get("total_cost") or 0, 0)
+        key = (holding["account_id"], holding.get("security_id"), holding["symbol"])
+        entries = manual_by_key.get(key, [])
+        # A security_id can be absent in some imported records, so symbol is
+        # also accepted for manual entries where it is the stable identifier.
+        if not entries:
+            entries = manual_by_key.get((holding["account_id"], None, holding["symbol"]), [])
+        overrides = [e for e in entries if e["entry_mode"] == "override"]
+        supplements = [e for e in entries if e["entry_mode"] != "override"]
+
+        if overrides:
+            manual_qty = sum(max(e["quantity"], 0) for e in overrides)
+            manual_cost = sum(max(e["total_cost"], 0) for e in overrides)
+            known_qty = min(quantity, manual_qty)
+            known_basis = manual_cost * (known_qty / manual_qty) if manual_qty else 0
+            basis_source = "manual override"
+        else:
+            manual_qty = sum(max(e["quantity"], 0) for e in supplements)
+            manual_cost = sum(max(e["total_cost"], 0) for e in supplements)
+            remaining_qty = max(quantity - imported_qty, 0)
+            manual_known_qty = min(remaining_qty, manual_qty)
+            manual_known_cost = (
+                manual_cost * (manual_known_qty / manual_qty) if manual_qty else 0
+            )
+            known_qty = imported_qty + manual_known_qty
+            known_basis = imported_cost + manual_known_cost
+            basis_source = "Plaid + manual" if manual_known_qty else "transactions"
+
+        unknown_qty = max(quantity - known_qty, 0)
+        known_value = price * known_qty
+        unknown_value = max(current_value - known_value, 0) if quantity else 0
+        known_gain_loss = known_value - known_basis
+        holding.update({
+            "imported_quantity": round(imported_qty, 6),
+            "manual_quantity": round(
+                max(known_qty - imported_qty, 0) if not overrides else known_qty, 6
+            ),
+            "known_quantity": round(known_qty, 6),
+            "unknown_quantity": round(unknown_qty, 6),
+            "known_value": round(known_value, 2),
+            "unknown_value": round(unknown_value, 2),
+            "known_cost_basis": round(known_basis, 2),
+            "known_gain_loss": round(known_gain_loss, 2),
+            "known_gain_loss_percent": round(known_gain_loss / known_basis * 100, 2)
+            if known_basis else None,
+            "basis_source": basis_source if known_qty else "unknown",
+        })
 
     history = _rows(
         """
@@ -717,8 +794,10 @@ def _investment_data() -> dict:
         )
 
     current_value = round(sum(h.get("current_value") or 0 for h in holdings), 2)
-    cost_basis = round(sum(h.get("cost_basis") or 0 for h in holdings), 2)
-    gain_loss = round(current_value - cost_basis, 2)
+    known_value = round(sum(h.get("known_value") or 0 for h in holdings), 2)
+    unknown_value = round(sum(h.get("unknown_value") or 0 for h in holdings), 2)
+    cost_basis = round(sum(h.get("known_cost_basis") or 0 for h in holdings), 2)
+    gain_loss = round(sum(h.get("known_gain_loss") or 0 for h in holdings), 2)
     transaction_amount = round(
         sum(t.get("amount") or 0 for t in investment_transactions), 2
     )
@@ -736,11 +815,16 @@ def _investment_data() -> dict:
             "transaction_count": len(investment_transactions),
             "transaction_amount": transaction_amount,
             "as_of": max(snapshots) if snapshots else None,
+            "known_value": known_value,
+            "unknown_value": unknown_value,
+            "basis_coverage_percent": round(known_value / current_value * 100, 2)
+            if current_value else 0,
         },
         "accounts": accounts,
         "holdings": holdings,
         "history": history,
         "transactions": investment_transactions,
+        "basis_entries": basis_entries,
     }
 
 
@@ -1025,6 +1109,74 @@ def api_investments():
         return jsonify(_investment_data())
     except Exception as e:
         logger.exception("Error in api_investments")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/investment/basis", methods=["POST"])
+def api_add_investment_basis():
+    """Add a manual acquisition-basis lot or aggregate entry."""
+    data = request.get_json(silent=True) or {}
+    required = ("account_id", "symbol", "quantity", "total_cost")
+    if any(data.get(key) in (None, "") for key in required):
+        return jsonify({"error": "account_id, symbol, quantity, and total_cost are required"}), 400
+
+    try:
+        quantity = float(data["quantity"])
+        total_cost = float(data["total_cost"])
+    except (TypeError, ValueError):
+        return jsonify({"error": "quantity and total_cost must be numbers"}), 400
+    if quantity <= 0 or total_cost < 0:
+        return jsonify({"error": "quantity must be positive and total_cost cannot be negative"}), 400
+
+    entry_mode = data.get("entry_mode", "supplement")
+    if entry_mode not in ("supplement", "override"):
+        return jsonify({"error": "entry_mode must be supplement or override"}), 400
+
+    try:
+        init_db()
+        with _db(write=True) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO investment_basis_entries
+                    (account_id, security_id, symbol, name, quantity, total_cost,
+                     purchase_date, entry_mode, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(data["account_id"]),
+                    data.get("security_id") or None,
+                    str(data["symbol"]),
+                    data.get("name"),
+                    quantity,
+                    total_cost,
+                    data.get("purchase_date") or None,
+                    entry_mode,
+                    data.get("notes"),
+                ),
+            )
+            basis_id = cur.lastrowid
+            conn.commit()
+        return jsonify({"success": True, "basis_id": basis_id}), 201
+    except Exception as e:
+        logger.exception("Error adding investment basis entry")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/investment/basis/<int:basis_id>", methods=["DELETE"])
+def api_delete_investment_basis(basis_id: int):
+    """Remove a manual basis entry, restoring imported data where applicable."""
+    try:
+        with _db(write=True) as conn:
+            cur = conn.execute(
+                "DELETE FROM investment_basis_entries WHERE basis_id = ?",
+                (basis_id,),
+            )
+            conn.commit()
+        if cur.rowcount == 0:
+            return jsonify({"error": "Basis entry not found"}), 404
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.exception("Error deleting investment basis entry")
         return jsonify({"error": str(e)}), 500
 
 

@@ -18,6 +18,39 @@
   </div>
 
   <div class="bg-surface rounded-xl border border-slate-700">
+    <div class="px-6 py-4 border-b border-slate-700">
+      <h2 class="font-semibold text-slate-100">Add Acquisition Basis</h2>
+      <p class="text-xs text-slate-500 mt-1">Add missing shares, or explicitly replace imported basis for a position.</p>
+    </div>
+    <form id="basis-form" class="p-6 grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3 items-end">
+      <label class="text-xs text-slate-400">Holding
+        <select id="basis-holding" required class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100"></select>
+      </label>
+      <label class="text-xs text-slate-400">Quantity covered
+        <input id="basis-quantity" type="number" min="0.000001" step="0.000001" required class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100">
+      </label>
+      <label class="text-xs text-slate-400">Total paid
+        <input id="basis-cost" type="number" min="0" step="0.01" required class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100">
+      </label>
+      <label class="text-xs text-slate-400">Purchase date
+        <input id="basis-date" type="date" class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100">
+      </label>
+      <label class="text-xs text-slate-400">Entry type
+        <select id="basis-mode" class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100">
+          <option value="supplement">Supplement missing shares</option>
+          <option value="override">Override imported basis</option>
+        </select>
+      </label>
+      <button class="px-4 py-2 bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium rounded-lg">Save basis</button>
+      <label class="text-xs text-slate-400 md:col-span-2 xl:col-span-6">Notes
+        <input id="basis-notes" type="text" placeholder="Optional note about this purchase or correction" class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100">
+      </label>
+    </form>
+    <div id="basis-message" class="px-6 pb-4 text-xs hidden"></div>
+    <div id="basis-entries" class="px-6 pb-5"></div>
+  </div>
+
+  <div class="bg-surface rounded-xl border border-slate-700">
     <div class="px-6 py-4 border-b border-slate-700 flex flex-wrap gap-2">
       <button class="investment-tab active-tab" data-tab="holdings">Current Holdings</button>
       <button class="investment-tab" data-tab="activity">Investment Activity</button>
@@ -81,8 +114,8 @@ let investmentHistoryChart = null;
 const holdingColumns = [
   ['symbol','Symbol','text'], ['name','Security','text'], ['account_name','Account','text'],
   ['quantity','Quantity','number'], ['current_price','Price','number'],
-  ['current_value','Value','number'], ['cost_basis','Cost Basis','number'],
-  ['gain_loss','Gain / Loss','number'], ['gain_loss_percent','Return','number']
+  ['current_value','Total Value','number'], ['known_cost_basis','Known Basis','number'],
+  ['unknown_value','Unknown Value','number'], ['known_gain_loss','Known Gain / Loss','number'], ['known_gain_loss_percent','Known Return','number']
 ];
 const activityColumns = [
   ['date','Date','text'], ['institution','Institution','text'], ['account_name','Account','text'],
@@ -132,6 +165,43 @@ function renderCards(s) {
   </div>`).join('');
 }
 
+function populateBasisControls() {
+  const select = document.getElementById('basis-holding');
+  select.innerHTML = investmentData.holdings.map((h, i) =>
+    `<option value="${i}">${safe(h.symbol)} · ${safe(h.account_name)} · ${number(h.quantity).toFixed(4)} shares</option>`
+  ).join('');
+  select.onchange = () => {
+    const h = investmentData.holdings[select.value];
+    document.getElementById('basis-quantity').value = Math.max(h.unknown_quantity || 0, 0).toFixed(6);
+  };
+  if (investmentData.holdings.length) select.onchange();
+  const entries = investmentData.basis_entries || [];
+  document.getElementById('basis-entries').innerHTML = entries.length ? `
+    <p class="text-xs text-slate-500 uppercase tracking-wider mb-2">Saved manual entries</p>
+    <div class="table-scroll"><table class="w-full text-xs border-collapse"><thead><tr>
+      <th class="text-left text-slate-500 px-2 py-2">Symbol</th><th class="text-left text-slate-500 px-2 py-2">Type</th>
+      <th class="text-right text-slate-500 px-2 py-2">Quantity</th><th class="text-right text-slate-500 px-2 py-2">Total Paid</th>
+      <th class="text-left text-slate-500 px-2 py-2">Date</th><th></th>
+    </tr></thead><tbody>${entries.map(e => `<tr>
+      <td class="px-2 py-2 text-violet-300">${safe(e.symbol)}</td><td class="px-2 py-2 text-slate-400">${e.entry_mode === 'override' ? 'Override' : 'Supplement'}</td>
+      <td class="px-2 py-2 text-right text-slate-300">${number(e.quantity).toFixed(6)}</td><td class="px-2 py-2 text-right text-slate-300">${fmtAmt(e.total_cost)}</td>
+      <td class="px-2 py-2 text-slate-400">${safe(e.purchase_date)}</td>
+      <td class="px-2 py-2 text-right"><button onclick="deleteBasis(${e.basis_id})" class="text-red-400 hover:text-red-300">Remove</button></td>
+    </tr>`).join('')}</tbody></table></div>` : '<p class="text-xs text-slate-500">No manual basis entries yet.</p>';
+}
+function deleteBasis(id) {
+  if (!confirm('Remove this manual basis entry? Imported transaction data will be used again.')) return;
+  fetch(`/api/investment/basis/${id}`, {method:'DELETE'}).then(r => {
+    if (!r.ok) throw new Error();
+    window.location.reload();
+  }).catch(() => showBasisMessage('Could not remove the basis entry.', true));
+}
+function showBasisMessage(text, error=false) {
+  const el = document.getElementById('basis-message');
+  el.textContent = text; el.classList.remove('hidden','text-emerald-400','text-red-400');
+  el.classList.add(error ? 'text-red-400' : 'text-emerald-400');
+}
+
 function renderHoldings() {
   const q = document.getElementById('holding-search').value.toLowerCase();
   const account = document.getElementById('holding-account').value;
@@ -148,9 +218,10 @@ function renderHoldings() {
     <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs">${number(h.quantity).toFixed(4)}</td>
     <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs">${amount(h.current_price)}</td>
     <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs font-semibold">${amount(h.current_value)}</td>
-    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs">${amount(h.cost_basis)}</td>
-    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs">${amount(h.gain_loss,true)}</td>
-    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs ${number(h.gain_loss_percent)>=0?'text-emerald-400':'text-red-400'}">${h.gain_loss_percent == null ? '—' : number(h.gain_loss_percent).toFixed(2)+'%'}</td>
+    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs">${amount(h.known_cost_basis)}</td>
+    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs text-amber-400">${amount(h.unknown_value)}</td>
+    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs">${amount(h.known_gain_loss,true)}</td>
+    <td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right text-xs ${number(h.known_gain_loss_percent)>=0?'text-emerald-400':'text-red-400'}">${h.known_gain_loss_percent == null ? '—' : number(h.known_gain_loss_percent).toFixed(2)+'%'}</td>
   </tr>`).join('');
   document.getElementById('holdings-table').innerHTML = rows.length ? `<table class="w-full text-xs border-collapse"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table><p class="text-xs text-slate-500 mt-4">Showing ${rows.length} of ${investmentData.holdings.length} holdings · Snapshot ${safe(investmentData.summary.as_of)}</p>` : '<p class="text-sm text-slate-500 p-2">No holdings match the selected filters.</p>';
 }
@@ -202,7 +273,7 @@ function resetActivity() { document.getElementById('activity-search').value=''; 
 fetch('/api/investments').then(r=>r.json()).then(data => {
   if (data.error) throw new Error(data.error);
   investmentData = data;
-  renderCards(data.summary);
+  renderCards(data.summary); populateBasisControls();
   [...new Set(data.accounts.map(a=>a.account_id))].forEach(id => {
     const a = data.accounts.find(x=>x.account_id===id);
     document.getElementById('holding-account').innerHTML += `<option value="${safe(id)}">${safe(a.account_name || id)}</option>`;
@@ -221,6 +292,23 @@ document.getElementById('holding-reset').addEventListener('click', resetHoldings
 document.getElementById('activity-search').addEventListener('input', renderActivity);
 document.getElementById('activity-type').addEventListener('change', renderActivity);
 document.getElementById('activity-reset').addEventListener('click', resetActivity);
+document.getElementById('basis-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const h = investmentData.holdings[document.getElementById('basis-holding').value];
+  const payload = {
+    account_id: h.account_id, security_id: h.security_id, symbol: h.symbol, name: h.name,
+    quantity: document.getElementById('basis-quantity').value,
+    total_cost: document.getElementById('basis-cost').value,
+    purchase_date: document.getElementById('basis-date').value,
+    entry_mode: document.getElementById('basis-mode').value,
+    notes: document.getElementById('basis-notes').value
+  };
+  fetch('/api/investment/basis', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)})
+    .then(r => r.json().then(d => ({ok:r.ok, d}))).then(({ok,d}) => {
+      if (!ok) throw new Error(d.error || 'Could not save basis');
+      window.location.reload();
+    }).catch(e => showBasisMessage(e.message, true));
+});
 document.querySelectorAll('.investment-tab').forEach(button => button.addEventListener('click', () => {
   document.querySelectorAll('.investment-tab').forEach(b=>b.classList.remove('active-tab'));
   document.querySelectorAll('.investment-panel').forEach(p=>p.classList.add('hidden'));

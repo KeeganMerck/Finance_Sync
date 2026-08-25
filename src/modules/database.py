@@ -358,6 +358,11 @@ _CREATE_INVESTMENTS_HISTORY_SYMBOL_INDEX = """
     ON investment_holdings_history(symbol);
 """
 
+_CREATE_INVESTMENTS_HISTORY_UNIQUE_INDEX = """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_investments_history_unique
+    ON investment_holdings_history(snapshot_date, account_id, holding_id);
+"""
+
 # Investment transactions table for detailed transaction history
 # Stores buy, sell, contribution, dividend transactions for performance analysis
 _CREATE_INVESTMENT_TRANSACTIONS_TABLE = """
@@ -630,6 +635,21 @@ def init_investment_holdings_history(db_path: Path = DATABASE_PATH) -> None:
         conn.execute(_CREATE_INVESTMENTS_HISTORY_HOLDING_INDEX)
         conn.execute(_CREATE_INVESTMENTS_HISTORY_SYMBOL_INDEX)
 
+        # Remove any same-day duplicates before creating the unique index.
+        # This keeps the latest inserted row for each (snapshot_date, account_id, holding_id).
+        conn.execute(
+            """
+            DELETE FROM investment_holdings_history
+            WHERE id NOT IN (
+                SELECT MAX(id)
+                FROM investment_holdings_history
+                GROUP BY snapshot_date, account_id, holding_id
+            )
+            """
+        )
+
+        conn.execute(_CREATE_INVESTMENTS_HISTORY_UNIQUE_INDEX)
+
     logger.debug("Investment holdings history table initialized successfully.")
 
 
@@ -811,53 +831,65 @@ def calculate_cost_basis_from_transactions(db_path: Path = DATABASE_PATH) -> dic
     amount_invested = {}
     
     with _get_connection(db_path) as conn:
-        # Sum all buy transactions by security to get total amount invested
+        # Sum all buy transactions by account_id + security_id to preserve per-holding cost basis.
         cursor = conn.execute(
             """
             SELECT 
+                account_id,
                 security_id,
                 SUM(amount) as total_invested,
                 SUM(quantity) as total_quantity,
                 COUNT(*) as transaction_count
             FROM investment_transactions
             WHERE type = 'buy'
-            GROUP BY security_id
+              AND account_id IS NOT NULL
+              AND security_id IS NOT NULL
+            GROUP BY account_id, security_id
             """
         )
         rows = cursor.fetchall()
 
         for row in rows:
+            account_id = row['account_id']
             security_id = row['security_id']
             total_invested = row['total_invested'] or 0
             total_quantity = row['total_quantity'] or 0
             tx_count = row['transaction_count'] or 0
+            holding_id = f"{account_id}_{security_id}"
             
-            amount_invested[security_id] = {
+            amount_invested[holding_id] = {
+                'account_id': account_id,
+                'security_id': security_id,
                 'total_invested': total_invested,
                 'total_quantity': total_quantity,
                 'transaction_count': tx_count
             }
 
-        # Also account for sell transactions by subtracting from amount invested
+        # Also account for sell transactions by subtracting from amount invested per holding.
         cursor = conn.execute(
             """
             SELECT 
+                account_id,
                 security_id,
                 SUM(amount) as total_sold,
                 SUM(quantity) as total_quantity_sold
             FROM investment_transactions
             WHERE type = 'sell'
-            GROUP BY security_id
+              AND account_id IS NOT NULL
+              AND security_id IS NOT NULL
+            GROUP BY account_id, security_id
             """
         )
         sell_rows = cursor.fetchall()
 
         for row in sell_rows:
+            account_id = row['account_id']
             security_id = row['security_id']
             total_sold = row['total_sold'] or 0
+            holding_id = f"{account_id}_{security_id}"
             
-            if security_id in amount_invested:
-                amount_invested[security_id]['total_invested'] -= total_sold
+            if holding_id in amount_invested:
+                amount_invested[holding_id]['total_invested'] -= total_sold
 
     logger.info(f"Calculated total amount invested for {len(amount_invested)} securities")
     return amount_invested
@@ -902,6 +934,18 @@ def upsert_investment_holdings_history(holdings: list[dict], db_path: Path = DAT
                      quantity, current_price, current_value, cost_basis, gain_loss, gain_loss_percent,
                      snapshot_date, last_updated)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(snapshot_date, account_id, holding_id) DO UPDATE SET
+                        institution = excluded.institution,
+                        security_id = excluded.security_id,
+                        symbol = excluded.symbol,
+                        name = excluded.name,
+                        quantity = excluded.quantity,
+                        current_price = excluded.current_price,
+                        current_value = excluded.current_value,
+                        cost_basis = excluded.cost_basis,
+                        gain_loss = excluded.gain_loss,
+                        gain_loss_percent = excluded.gain_loss_percent,
+                        last_updated = excluded.last_updated
                     """,
                     (
                         holding.get('holding_id'),
@@ -1057,12 +1101,24 @@ def upsert_investment_holdings(holdings: list[dict], db_path: Path = DATABASE_PA
 
         for holding in holdings:
             # Use calculated amount invested if direct cost_basis is missing
+            account_id = holding.get('account_id')
             security_id = holding.get('security_id')
+            holding_id = f"{account_id}_{security_id}"
             cost_basis = holding.get('cost_basis', 0)
             
-            if not cost_basis and security_id in amount_invested_map:
+            if not cost_basis and holding_id in amount_invested_map:
+                cost_basis = amount_invested_map[holding_id]['total_invested']
+                logger.debug(
+                    f"Using calculated amount invested for {holding_id}: "
+                    f"${cost_basis:.2f} ({amount_invested_map[holding_id]['transaction_count']} transactions)"
+                )
+            elif not cost_basis and security_id in amount_invested_map:
+                # Fallback for legacy maps keyed by security_id only.
                 cost_basis = amount_invested_map[security_id]['total_invested']
-                logger.debug(f"Using calculated amount invested for {security_id}: ${cost_basis:.2f} ({amount_invested_map[security_id]['transaction_count']} transactions)")
+                logger.debug(
+                    f"Using calculated amount invested for security {security_id}: "
+                    f"${cost_basis:.2f} ({amount_invested_map[security_id]['transaction_count']} transactions)"
+                )
             
             # Use INSERT OR REPLACE for simple upsert
             conn.execute(

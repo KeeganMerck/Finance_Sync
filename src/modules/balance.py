@@ -169,7 +169,7 @@ def fetch_investments() -> list[dict]:
 
     Returns:
         List of investment holding dicts matching the investment_holdings schema:
-          - holding_id        : Unique identifier (account_id + security_id + date)
+          - holding_id        : Unique identifier (account_id + security_id)
           - account_id        : Plaid's unique account identifier
           - account_name      : Human-readable account name
           - institution       : Institution name (e.g., "Fidelity", "Robinhood")

@@ -22,6 +22,7 @@ description: Flask web dashboard for Finance Sync — ports, files, data flow, a
 - Net worth: assets (depository + investment) minus liabilities (credit + loan).
 - Averages exclude the current (partial) month — only complete months count.
 - `COALESCE(user_category, plaid_category_primary, plaid_category, 'Uncategorized')` is the category resolution order throughout.
+- Live Plaid sync can exceed the Replit webview startup timeout before Flask binds port 5000; `--no-sync` is the reliable way to smoke-test the dashboard against the existing database.
 
 ## API routes
 - `GET /api/summary` — 4 summary card values

@@ -176,6 +176,29 @@ _CREATE_MANUAL_TRANSACTIONS_TABLE = """
     );
 """
 
+_CREATE_INVESTMENT_BASIS_ENTRIES_TABLE = """
+    CREATE TABLE IF NOT EXISTS investment_basis_entries (
+        basis_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id     TEXT NOT NULL,
+        security_id    TEXT,
+        symbol         TEXT NOT NULL,
+        name           TEXT,
+        quantity       REAL NOT NULL,
+        total_cost     REAL NOT NULL,
+        purchase_date  TEXT,
+        entry_mode     TEXT NOT NULL DEFAULT 'supplement',
+        notes          TEXT,
+        active         INTEGER NOT NULL DEFAULT 1,
+        created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at     TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+"""
+
+_CREATE_INVESTMENT_BASIS_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investment_basis_account_security
+    ON investment_basis_entries(account_id, security_id, symbol);
+"""
+
 
 # ─── Connection Management ─────────────────────────────────────────────────────
 
@@ -274,6 +297,9 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         # Initialize manual transactions table
         init_manual_transactions(db_path)
 
+        # Initialize manual investment acquisition-basis entries
+        init_investment_basis_entries(db_path)
+
     logger.info("Database schema initialized successfully.")
 
 
@@ -358,6 +384,19 @@ def init_manual_transactions(db_path: Path = DATABASE_PATH) -> None:
         conn.execute(_CREATE_MANUAL_TRANSACTIONS_TABLE)
 
     logger.debug("Manual transactions table initialized successfully.")
+
+
+def init_investment_basis_entries(db_path: Path = DATABASE_PATH) -> None:
+    """Create the manual investment acquisition-basis table if needed."""
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping investment basis init.")
+        return
+
+    with _get_connection(db_path) as conn:
+        conn.execute(_CREATE_INVESTMENT_BASIS_ENTRIES_TABLE)
+        conn.execute(_CREATE_INVESTMENT_BASIS_INDEX)
+
+    logger.debug("Investment basis entries table initialized successfully.")
 
 
 def upsert_manual_transaction(transaction: dict, db_path: Path = DATABASE_PATH) -> None:

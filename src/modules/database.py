@@ -275,130 +275,27 @@ _CREATE_MANUAL_TRANSACTIONS_TABLE = """
     );
 """
 
-# ─── Investment Holdings Table ──────────────────────────────────────────────────
-#
-# Stores detailed investment holdings from Plaid brokerage/investment accounts.
-# Tracks individual securities, quantities, prices, and performance metrics.
-# Updated on each sync run to maintain current portfolio snapshot.
-#
-# Key features:
-# - Tracks both current holdings and historical snapshots for performance analysis
-# - Stores cost basis for gain/loss calculations
-# - Links to account_snapshots for account metadata
-
-_CREATE_INVESTMENT_HOLDINGS_TABLE = """
-    CREATE TABLE IF NOT EXISTS investment_holdings (
-        holding_id TEXT PRIMARY KEY,
-        account_id TEXT NOT NULL,
-        institution TEXT,
-        security_id TEXT,
-        symbol TEXT,
-        name TEXT,
-        quantity REAL,
-        current_price REAL,
-        current_value REAL,
-        cost_basis REAL,
-        purchase_date TEXT,
-        last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
-        snapshot_date TEXT NOT NULL,
-        FOREIGN KEY (account_id) REFERENCES account_snapshots(account_id)
+_CREATE_INVESTMENT_BASIS_ENTRIES_TABLE = """
+    CREATE TABLE IF NOT EXISTS investment_basis_entries (
+        basis_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id     TEXT NOT NULL,
+        security_id    TEXT,
+        symbol         TEXT NOT NULL,
+        name           TEXT,
+        quantity       REAL NOT NULL,
+        total_cost     REAL NOT NULL,
+        purchase_date  TEXT,
+        entry_mode     TEXT NOT NULL DEFAULT 'supplement',
+        notes          TEXT,
+        active         INTEGER NOT NULL DEFAULT 1,
+        created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at     TEXT DEFAULT CURRENT_TIMESTAMP
     );
 """
 
-_CREATE_INVESTMENTS_ACCOUNT_INDEX = """
-    CREATE INDEX IF NOT EXISTS idx_investments_account
-    ON investment_holdings(account_id);
-"""
-
-_CREATE_INVESTMENTS_DATE_INDEX = """
-    CREATE INDEX IF NOT EXISTS idx_investments_date
-    ON investment_holdings(snapshot_date);
-"""
-
-_CREATE_INVESTMENTS_SYMBOL_INDEX = """
-    CREATE INDEX IF NOT EXISTS idx_investments_symbol
-    ON investment_holdings(symbol);
-"""
-
-# Investment holdings history table for performance tracking
-# Stores historical snapshots of investment holdings over time
-_CREATE_INVESTMENT_HOLDINGS_HISTORY_TABLE = """
-    CREATE TABLE IF NOT EXISTS investment_holdings_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        holding_id TEXT NOT NULL,
-        account_id TEXT NOT NULL,
-        institution TEXT,
-        security_id TEXT,
-        symbol TEXT,
-        name TEXT,
-        quantity REAL,
-        current_price REAL,
-        current_value REAL,
-        cost_basis REAL,
-        gain_loss REAL,
-        gain_loss_percent REAL,
-        snapshot_date TEXT NOT NULL,
-        last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (account_id) REFERENCES account_snapshots(account_id)
-    );
-"""
-
-_CREATE_INVESTMENTS_HISTORY_DATE_INDEX = """
-    CREATE INDEX IF NOT EXISTS idx_investments_history_date
-    ON investment_holdings_history(snapshot_date);
-"""
-
-_CREATE_INVESTMENTS_HISTORY_HOLDING_INDEX = """
-    CREATE INDEX IF NOT EXISTS idx_investments_history_holding
-    ON investment_holdings_history(holding_id);
-"""
-
-_CREATE_INVESTMENTS_HISTORY_SYMBOL_INDEX = """
-    CREATE INDEX IF NOT EXISTS idx_investments_history_symbol
-    ON investment_holdings_history(symbol);
-"""
-
-_CREATE_INVESTMENTS_HISTORY_UNIQUE_INDEX = """
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_investments_history_unique
-    ON investment_holdings_history(snapshot_date, account_id, holding_id);
-"""
-
-# Investment transactions table for detailed transaction history
-# Stores buy, sell, contribution, dividend transactions for performance analysis
-_CREATE_INVESTMENT_TRANSACTIONS_TABLE = """
-    CREATE TABLE IF NOT EXISTS investment_transactions (
-        transaction_id TEXT PRIMARY KEY,
-        account_id TEXT NOT NULL,
-        institution TEXT,
-        security_id TEXT,
-        date TEXT NOT NULL,
-        datetime TEXT,
-        name TEXT,
-        quantity REAL,
-        amount REAL,
-        price REAL,
-        fees REAL,
-        type TEXT,
-        subtype TEXT,
-        currency TEXT DEFAULT 'USD',
-        last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (account_id) REFERENCES account_snapshots(account_id)
-    );
-"""
-
-_CREATE_INVESTMENT_TRANSACTIONS_DATE_INDEX = """
-    CREATE INDEX IF NOT EXISTS idx_investment_transactions_date
-    ON investment_transactions(date);
-"""
-
-_CREATE_INVESTMENT_TRANSACTIONS_ACCOUNT_INDEX = """
-    CREATE INDEX IF NOT EXISTS idx_investment_transactions_account
-    ON investment_transactions(account_id);
-"""
-
-_CREATE_INVESTMENT_TRANSACTIONS_SECURITY_INDEX = """
-    CREATE INDEX IF NOT EXISTS idx_investment_transactions_security
-    ON investment_transactions(security_id);
+_CREATE_INVESTMENT_BASIS_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investment_basis_account_security
+    ON investment_basis_entries(account_id, security_id, symbol);
 """
 
 
@@ -499,14 +396,8 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         # Initialize manual transactions table
         init_manual_transactions(db_path)
 
-        # Initialize investment holdings table
-        init_investment_holdings(db_path)
-
-        # Initialize investment holdings history table
-        init_investment_holdings_history(db_path)
-
-        # Initialize investment transactions table
-        init_investment_transactions(db_path)
+        # Initialize manual investment acquisition-basis entries
+        init_investment_basis_entries(db_path)
 
     logger.info("Database schema initialized successfully.")
 
@@ -1023,6 +914,19 @@ def get_investment_holdings_history(db_path: Path = DATABASE_PATH, days: int = 9
 
     logger.info(f"Retrieved {len(rows)} historical investment holding(s) from database.")
     return [dict(row) for row in rows]
+
+
+def init_investment_basis_entries(db_path: Path = DATABASE_PATH) -> None:
+    """Create the manual investment acquisition-basis table if needed."""
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping investment basis init.")
+        return
+
+    with _get_connection(db_path) as conn:
+        conn.execute(_CREATE_INVESTMENT_BASIS_ENTRIES_TABLE)
+        conn.execute(_CREATE_INVESTMENT_BASIS_INDEX)
+
+    logger.debug("Investment basis entries table initialized successfully.")
 
 
 def upsert_manual_transaction(transaction: dict, db_path: Path = DATABASE_PATH) -> None:

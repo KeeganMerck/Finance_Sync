@@ -20,13 +20,22 @@
     {% endfor %}
   </div>
 
-  <!-- ── Investment summary cards ── -->
-  <div class="grid grid-cols-2 lg:grid-cols-4 gap-4" id="investment-cards">
-    <div class="bg-surface rounded-xl p-5 border border-slate-700 animate-pulse">
-      <div class="h-3 bg-slate-700 rounded w-1/2 mb-3"></div>
-      <div class="h-7 bg-slate-700 rounded w-3/4"></div>
+  <!-- ── Investment summary ── -->
+  <a href="/investments" class="block bg-surface rounded-xl border border-slate-700 hover:border-violet-500/60 transition-colors">
+    <div class="px-6 py-4 border-b border-slate-700 flex items-center justify-between">
+      <div>
+        <h2 class="font-semibold text-slate-100">Investments</h2>
+        <p class="text-xs text-slate-500 mt-1">Portfolio value and performance</p>
+      </div>
+      <span class="text-xs text-violet-400">Open investments →</span>
     </div>
-  </div>
+    <div id="investment-summary" class="grid grid-cols-2 md:grid-cols-4 gap-4 p-5">
+      <div class="h-12 bg-slate-700/50 rounded animate-pulse"></div>
+      <div class="h-12 bg-slate-700/50 rounded animate-pulse"></div>
+      <div class="h-12 bg-slate-700/50 rounded animate-pulse"></div>
+      <div class="h-12 bg-slate-700/50 rounded animate-pulse"></div>
+    </div>
+  </a>
 
   <!-- ── Mini spend table + trend charts ── -->
   <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
@@ -236,6 +245,27 @@ fetch('/api/investments')
   .catch(() => {
     document.getElementById('cards').innerHTML =
       '<p class="col-span-4 text-slate-500 text-sm">Could not load summary — run the sync pipeline first.</p>';
+  });
+
+fetch('/api/summary')
+  .then(r => r.json())
+  .then(d => {
+    const i = d.investments || {};
+    const gainClass = (i.gain_loss || 0) >= 0 ? 'text-emerald-400' : 'text-red-400';
+    document.getElementById('investment-summary').innerHTML = `
+      <div><p class="text-xs text-slate-500 uppercase tracking-wider">Portfolio Value</p>
+        <p class="text-xl font-bold text-violet-400 mt-1">${fmtAmt(i.current_value || 0)}</p></div>
+      <div><p class="text-xs text-slate-500 uppercase tracking-wider">Gain / Loss</p>
+        <p class="text-xl font-bold ${gainClass} mt-1">${fmtAmt(i.gain_loss || 0)}</p></div>
+      <div><p class="text-xs text-slate-500 uppercase tracking-wider">Return</p>
+        <p class="text-xl font-bold ${gainClass} mt-1">${i.gain_loss_percent == null ? '—' : i.gain_loss_percent.toFixed(2) + '%'}</p></div>
+      <div><p class="text-xs text-slate-500 uppercase tracking-wider">Holdings</p>
+        <p class="text-xl font-bold text-slate-100 mt-1">${i.holding_count || 0}</p></div>
+    `;
+  })
+  .catch(() => {
+    document.getElementById('investment-summary').innerHTML =
+      '<p class="col-span-4 text-slate-500 text-sm">Investment data unavailable.</p>';
   });
 
 /* ─── Mini spend table (last 6 complete months) ─────────────────────── */

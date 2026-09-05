@@ -239,7 +239,10 @@ def _spend_pivot(start_month: str, end_month: str) -> dict:
     }
 
 
-def _get_transactions(start_date: str = None, end_date: str = None) -> list[dict]:
+def _get_transactions(
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict]:
     """
     Get transactions for the transactions view (both Plaid and manual).
     

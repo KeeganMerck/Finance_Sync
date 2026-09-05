@@ -13,7 +13,7 @@ description: Flask web dashboard for Finance Sync — ports, files, data flow, a
 
 ## Port
 - **Port 5000** (Replit webview requires this). Override locally with `DASHBOARD_PORT` env var.
-- Workflow name: `Start application`, command: `python -m src.dashboard`
+- Workflow name: `Start application`, command: `python -m src.dashboard --no-sync`; run the sync pipeline separately when fresh Plaid data is needed.
 
 ## Key conventions
 - All DB access is read-only (`file:...?mode=ro` SQLite URI). Dashboard never writes.
@@ -23,6 +23,7 @@ description: Flask web dashboard for Finance Sync — ports, files, data flow, a
 - Averages exclude the current (partial) month — only complete months count.
 - `COALESCE(user_category, plaid_category_primary, plaid_category, 'Uncategorized')` is the category resolution order throughout.
 - Live Plaid sync can exceed the Replit webview startup timeout before Flask binds port 5000; `--no-sync` is the reliable way to smoke-test the dashboard against the existing database.
+- After dashboard merges, import `src.dashboard` before restarting the workflow; Flask fails fast on duplicate route endpoints and missing config imports that `py_compile` alone will not catch.
 
 ## API routes
 - `GET /api/summary` — 4 summary card values

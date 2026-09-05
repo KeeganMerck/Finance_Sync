@@ -40,7 +40,7 @@ from typing import Any
 from flask import Flask, Response, jsonify, render_template, request
 
 # ── Config ────────────────────────────────────────────────────────────────────
-from .core.config import DATABASE_PATH
+from .core.config import DATABASE_PATH, DASHBOARD_PORT
 from .modules.database import init_db
 from .core.config import ROLLING_SYNC_DAYS
 
@@ -1032,11 +1032,6 @@ def networth():
     return render_template("networth.html")
 
 
-@app.route("/investments")
-def investments():
-    return render_template("investments.html")
-
-
 # ── API routes ────────────────────────────────────────────────────────────────
 
 @app.route("/api/summary")
@@ -1235,70 +1230,6 @@ def api_networth_daily():
             "net_worth": round(r["net_worth"], 2)
         })
     return jsonify(result)
-
-
-@app.route("/api/investments")
-def api_investments():
-    """Get detailed investment holdings breakdown with summary metrics."""
-    try:
-        from .core.config import ENABLE_DATABASE
-        
-        logger.info(f"DATABASE_PATH: {DATABASE_PATH}")
-        logger.info(f"Database exists: {DATABASE_PATH.exists()}")
-        logger.info(f"ENABLE_DATABASE: {ENABLE_DATABASE}")
-        
-        holdings = get_investment_holdings()
-        logger.info(f"Retrieved {len(holdings)} investment holdings from database")
-        
-        # Calculate summary metrics with None handling
-        total_value = sum(h.get('current_value') or 0 for h in holdings)
-        total_cost = sum(h.get('cost_basis') or 0 for h in holdings)
-        total_gain = total_value - total_cost
-        total_gain_percent = (total_gain / total_cost * 100) if total_cost > 0 else 0
-        
-        # Group by institution
-        by_institution = {}
-        for h in holdings:
-            inst = h.get('institution') or 'Unknown'
-            if inst not in by_institution:
-                by_institution[inst] = {'value': 0, 'cost': 0, 'count': 0}
-            by_institution[inst]['value'] += h.get('current_value') or 0
-            by_institution[inst]['cost'] += h.get('cost_basis') or 0
-            by_institution[inst]['count'] += 1
-        
-        # Calculate gains per institution
-        for inst in by_institution:
-            by_institution[inst]['gain'] = by_institution[inst]['value'] - by_institution[inst]['cost']
-            by_institution[inst]['gain_percent'] = (
-                (by_institution[inst]['gain'] / by_institution[inst]['cost'] * 100) 
-                if by_institution[inst]['cost'] > 0 else 0
-            )
-        
-        return jsonify({
-            'holdings': holdings,
-            'summary': {
-                'total_value': total_value,
-                'total_cost': total_cost,
-                'total_gain': total_gain,
-                'total_gain_percent': total_gain_percent,
-                'total_holdings': len(holdings)
-            },
-            'by_institution': by_institution
-        })
-    except Exception as e:
-        logger.exception("Failed to fetch investment holdings")
-        # Return empty data on error to prevent UI breaking
-        return jsonify({
-            'holdings': [],
-            'summary': {
-                'total_value': 0,
-                'total_cost': 0,
-                'total_gain': 0,
-                'total_gain_percent': 0,
-                'total_holdings': 0
-            },
-            'by_institution': {}
-        })
 
 
 @app.route("/api/investments/history")

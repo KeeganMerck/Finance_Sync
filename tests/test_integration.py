@@ -397,7 +397,7 @@ class TestMockJsonPipeline(unittest.TestCase):
     even when run outside the full project directory structure.
     """
 
-    MOCK_JSON = Path(__file__).parent.parent / 'data' / 'mock_transactions.json'
+    MOCK_JSON = Path(__file__).parent.parent.parent / 'src' / 'core' / 'data' / 'mock_transactions.json'
 
     def setUp(self):
         if not self.MOCK_JSON.exists():

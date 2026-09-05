@@ -67,6 +67,19 @@
     </div>
   </div>
 
+  <!-- ── Investment holdings table ── -->
+  <div class="bg-surface rounded-xl border border-slate-700">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700">
+      <h2 class="font-semibold text-slate-100">Investment Holdings</h2>
+      <span class="text-xs text-slate-500">Current portfolio</span>
+    </div>
+    <div class="table-scroll max-h-96 overflow-y-auto">
+      <div id="investment-holdings-wrap" class="p-4">
+        <div class="spinner"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Net worth trend ── -->
   <div class="bg-surface rounded-xl border border-slate-700">
     <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700">
@@ -89,31 +102,33 @@
 fetch('/api/summary')
   .then(r => r.json())
   .then(d => {
-    // Header date label
+    // Header date label - show rolling month range
     const label = document.getElementById('month-label');
-    if (label && d.current_month) {
-      const [y, m] = d.current_month.split('-');
-      const name = new Date(y, m-1, 1).toLocaleString('default',{month:'long',year:'numeric'});
-      label.textContent = name;
+    if (label && d.rolling_start_date && d.rolling_end_date) {
+      const start = new Date(d.rolling_start_date);
+      const end = new Date(d.rolling_end_date);
+      const startStr = start.toLocaleDateString('default', { month: 'short', day: 'numeric' });
+      const endStr = end.toLocaleDateString('default', { month: 'short', day: 'numeric', year: 'numeric' });
+      label.textContent = `Rolling month: ${startStr} to ${endStr}`;
     }
 
     const cards = [
       {
-        label: 'Income This Month',
+        label: 'Income (Rolling Month)',
         value: fmtAmt(d.income_this_month),
         sub: 'money in',
         color: 'text-emerald-400',
         icon: '↑'
       },
       {
-        label: 'Expenses This Month',
+        label: 'Expenses (Rolling Month)',
         value: fmtAmt(d.spend_this_month),
         sub: 'money out',
         color: 'text-red-400',
         icon: '↓'
       },
       {
-        label: 'Net This Month',
+        label: 'Net (Rolling Month)',
         value: fmtAmt(d.net_this_month),
         sub: d.net_this_month >= 0 ? 'saved' : 'over budget',
         color: d.net_this_month >= 0 ? 'text-emerald-400' : 'text-red-400',
@@ -135,6 +150,97 @@ fetch('/api/summary')
         <p class="text-xs text-slate-500 mt-1">${c.icon} ${c.sub}</p>
       </div>
     `).join('');
+  })
+
+/* ─── Investment holdings ────────────────────────────────────────────── */
+fetch('/api/investments')
+  .then(r => r.json())
+  .then(d => {
+    const summary = d.summary;
+    const holdings = d.holdings;
+    
+    // Render investment summary cards
+    const invCards = [
+      {
+        label: 'Total Value',
+        value: fmtAmt(summary.total_value),
+        sub: `${summary.total_holdings} holdings`,
+        color: 'text-sky-400',
+        icon: '◈'
+      },
+      {
+        label: 'Total Gain/Loss',
+        value: fmtAmt(summary.total_gain),
+        sub: `${summary.total_gain_percent.toFixed(1)}% return`,
+        color: summary.total_gain >= 0 ? 'text-emerald-400' : 'text-red-400',
+        icon: summary.total_gain >= 0 ? '↑' : '↓'
+      },
+      {
+        label: 'Total Cost Basis',
+        value: fmtAmt(summary.total_cost),
+        sub: 'original investment',
+        color: 'text-slate-400',
+        icon: '$'
+      }
+    ];
+    
+    document.getElementById('investment-cards').innerHTML = invCards.map(c => `
+      <div class="bg-surface rounded-xl p-5 border border-slate-700">
+        <p class="text-xs text-slate-500 uppercase tracking-wider mb-2">${c.label}</p>
+        <p class="text-2xl font-bold ${c.color}">${c.value}</p>
+        <p class="text-xs text-slate-500 mt-1">${c.icon} ${c.sub}</p>
+      </div>
+    `).join('');
+    
+    // Render investment holdings table
+    if (holdings && holdings.length > 0) {
+      const tableHtml = `
+        <table class="w-full text-sm">
+          <thead class="bg-slate-800/50 sticky top-0">
+            <tr>
+              <th class="text-left p-3 text-slate-400 font-medium">Symbol</th>
+              <th class="text-left p-3 text-slate-400 font-medium">Name</th>
+              <th class="text-right p-3 text-slate-400 font-medium">Quantity</th>
+              <th class="text-right p-3 text-slate-400 font-medium">Price</th>
+              <th class="text-right p-3 text-slate-400 font-medium">Value</th>
+              <th class="text-right p-3 text-slate-400 font-medium">Cost Basis</th>
+              <th class="text-right p-3 text-slate-400 font-medium">Gain/Loss</th>
+              <th class="text-right p-3 text-slate-400 font-medium">Return %</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${holdings.map(h => {
+              const gainLoss = h.gain_loss || 0;
+              const gainLossPercent = h.gain_loss_percent || 0;
+              const gainColor = gainLoss >= 0 ? 'text-emerald-400' : 'text-red-400';
+              return `
+                <tr class="border-b border-slate-700/50 hover:bg-slate-800/30">
+                  <td class="p-3 text-slate-200 font-medium">${h.symbol || 'N/A'}</td>
+                  <td class="p-3 text-slate-400">${h.name || 'Unknown'}</td>
+                  <td class="p-3 text-right text-slate-300">${h.quantity?.toFixed(4) || '0'}</td>
+                  <td class="p-3 text-right text-slate-300">${fmtAmt(h.current_price)}</td>
+                  <td class="p-3 text-right text-slate-200 font-medium">${fmtAmt(h.current_value)}</td>
+                  <td class="p-3 text-right text-slate-400">${fmtAmt(h.cost_basis)}</td>
+                  <td class="p-3 text-right ${gainColor} font-medium">${fmtAmt(gainLoss)}</td>
+                  <td class="p-3 text-right ${gainColor}">${gainLossPercent.toFixed(1)}%</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      `;
+      document.getElementById('investment-holdings-wrap').innerHTML = tableHtml;
+    } else {
+      document.getElementById('investment-holdings-wrap').innerHTML = 
+        '<p class="text-slate-500 text-center py-8">No investment holdings found. Investment sync may be disabled or no investment accounts linked.</p>';
+    }
+  })
+  .catch(err => {
+    console.error('Failed to load investments:', err);
+    document.getElementById('investment-cards').innerHTML = 
+      '<p class="text-slate-500 text-center">Failed to load investment data</p>';
+    document.getElementById('investment-holdings-wrap').innerHTML = 
+      '<p class="text-slate-500 text-center py-8">Failed to load investment data</p>';
   })
   .catch(() => {
     document.getElementById('cards').innerHTML =

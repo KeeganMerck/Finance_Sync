@@ -20,7 +20,7 @@ from datetime import date
 from typing import List, Optional
 
 from ..core.config import USE_PLAID, DATABASE_PATH, ENABLE_DATABASE, DRY_RUN, GOOGLE_SHEETS_ENABLED, GOOGLE_SHEETS_SPREADSHEET_NAME, GOOGLE_SHEETS_CREDENTIALS_PATH
-from .database import upsert_snapshots as db_upsert_snapshots, get_latest_balances as db_get_latest_balances, get_balance_history as db_get_balance_history, get_net_worth_history as db_get_net_worth_history, get_latest_manual_snapshots as db_get_latest_manual_snapshots
+from .database import upsert_snapshots as db_upsert_snapshots, get_latest_balances as db_get_latest_balances, get_balance_history as db_get_balance_history, get_net_worth_history as db_get_net_worth_history, get_latest_manual_snapshots as db_get_latest_manual_snapshots, upsert_investment_holdings as db_upsert_investment_holdings, upsert_investment_holdings_history as db_upsert_investment_holdings_history
 from ..api import plaid_integration
 
 import gspread
@@ -158,6 +158,191 @@ def fetch_manual_balances() -> list[dict]:
         f"Prepared {len(stamped)} manual account snapshot(s) for today ({today})."
     )
     return stamped
+
+
+def fetch_investments() -> list[dict]:
+    """
+    Fetch detailed investment holdings from all investment/brokerage accounts.
+
+    Iterates through Plaid profiles and institutions, calling get_investments()
+    for accounts that are investment or brokerage type.
+
+    Returns:
+        List of investment holding dicts matching the investment_holdings schema:
+          - holding_id        : Unique identifier (account_id + security_id)
+          - account_id        : Plaid's unique account identifier
+          - account_name      : Human-readable account name
+          - institution       : Institution name (e.g., "Fidelity", "Robinhood")
+          - security_id       : Plaid's security identifier
+          - symbol            : Stock ticker symbol (e.g., "AAPL", "VTI")
+          - name              : Security name (e.g., "Apple Inc.", "Vanguard Total Stock Market ETF")
+          - quantity          : Number of shares/units held
+          - current_price     : Current market price per share
+          - current_value     : Total current value (quantity × price)
+          - cost_basis        : Original purchase cost
+          - purchase_date     : Date when position was opened
+          - last_updated      : Timestamp of last fetch
+          - snapshot_date     : Date when this snapshot was taken
+    """
+    if not USE_PLAID:
+        logger.info("Plaid disabled via config — skipping investment fetch.")
+        return []
+
+    from ..api import plaid_integration
+
+    profiles = plaid_integration.get_plaid_profiles()
+    if not profiles:
+        logger.warning("No Plaid profiles configured. Returning empty investments.")
+        return []
+
+    all_holdings = []
+
+    for profile in profiles:
+        try:
+            institutions = profile.institutions
+            if not institutions:
+                logger.debug(f"{profile.name}: no institutions found, skipping investments fetch")
+                continue
+                
+            for institution_name, access_token in institutions.items():
+                try:
+                    # First get accounts to filter for investment/brokerage types
+                    accounts = _get_accounts_with_balances(access_token, profile)
+                    investment_accounts = [a for a in accounts if a['type'] in ['investment', 'brokerage']]
+
+                    if investment_accounts:
+                        # Fetch investments for this institution
+                        institution_holdings = plaid_integration.get_investments(access_token, profile)
+                        all_holdings.extend(institution_holdings)
+
+                        logger.info(
+                            f"{profile.name}/{institution_name}: fetched {len(institution_holdings)} holding(s) "
+                            f"from {len(investment_accounts)} investment account(s)"
+                        )
+                    else:
+                        logger.debug(
+                            f"{profile.name}/{institution_name}: no investment accounts found, skipping investments fetch"
+                        )
+
+                except Exception as e:
+                    logger.warning(
+                        f"{profile.name}/{institution_name}: failed to fetch investments: {e}"
+                    )
+                    continue
+        except Exception as e:
+            logger.warning(
+                f"{profile.name}: failed to process institutions: {e}"
+            )
+            continue
+
+    logger.info(f"Fetched {len(all_holdings)} total investment holding(s) from Plaid.")
+    return all_holdings
+
+
+def fetch_investment_transactions(start_date: date, end_date: date) -> list[dict]:
+    """
+    Fetch investment transactions from all investment/brokerage accounts.
+
+    Iterates through Plaid profiles and institutions, calling get_investment_transactions()
+    for accounts that are investment or brokerage type.
+
+    Args:
+        start_date: Start date for transaction history.
+        end_date: End date for transaction history.
+
+    Returns:
+        List of investment transaction dicts with transaction details.
+    """
+    if not USE_PLAID:
+        logger.info("Plaid disabled via config — skipping investment transactions fetch.")
+        return []
+
+    from ..api import plaid_integration
+
+    profiles = plaid_integration.get_plaid_profiles()
+    if not profiles:
+        logger.warning("No Plaid profiles configured. Returning empty investment transactions.")
+        return []
+
+    all_transactions = []
+
+    for profile in profiles:
+        try:
+            institutions = profile.institutions
+            if not institutions:
+                logger.debug(f"{profile.name}: no institutions found, skipping investment transactions fetch")
+                continue
+                
+            for institution_name, access_token in institutions.items():
+                try:
+                    # First get accounts to filter for investment/brokerage types
+                    accounts = _get_accounts_with_balances(access_token, profile)
+                    investment_accounts = [a for a in accounts if a['type'] in ['investment', 'brokerage']]
+
+                    if investment_accounts:
+                        # Fetch investment transactions for this institution
+                        institution_transactions = plaid_integration.get_investment_transactions(
+                            access_token, start_date, end_date, profile
+                        )
+                        all_transactions.extend(institution_transactions)
+
+                        logger.info(
+                            f"{profile.name}/{institution_name}: fetched {len(institution_transactions)} transaction(s) "
+                            f"from {len(investment_accounts)} investment account(s)"
+                        )
+                    else:
+                        logger.debug(
+                            f"{profile.name}/{institution_name}: no investment accounts found, skipping investment transactions fetch"
+                        )
+
+                except Exception as e:
+                    logger.warning(
+                        f"{profile.name}/{institution_name}: failed to fetch investment transactions: {e}"
+                    )
+                    continue
+        except Exception as e:
+            logger.warning(
+                f"{profile.name}: failed to process institutions: {e}"
+            )
+            continue
+
+    logger.info(f"Fetched {len(all_transactions)} total investment transaction(s) from Plaid.")
+    return all_transactions
+
+
+def upsert_investment_holdings(holdings: list[dict]) -> dict:
+    """
+    Upsert investment holdings to the database using the database module function.
+
+    This function wraps the database module's upsert_investment_holdings function
+    to maintain consistency with other balance-related database operations.
+
+    Args:
+        holdings: List of investment holding dicts from fetch_investments()
+
+    Returns:
+        Dictionary with 'written', 'unchanged', 'total' counts from the database module.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping investment holdings upsert.")
+        return {"written": 0, "unchanged": 0, "total": 0}
+
+    if not holdings:
+        logger.debug("No investment holdings to upsert.")
+        return {"written": 0, "unchanged": 0, "total": 0}
+
+    try:
+        result = db_upsert_investment_holdings(holdings)
+        logger.info(f"Upserted {result['written']} investment holding(s) to SQLite.")
+        
+        # Also save to history table for performance tracking
+        history_result = db_upsert_investment_holdings_history(holdings)
+        logger.info(f"Saved {history_result['written']} investment holding(s) to history.")
+        
+        return result
+    except Exception as e:
+        logger.exception(f"Failed to upsert investment holdings: {e}")
+        return {"written": 0, "unchanged": 0, "total": len(holdings)}
 
 
 def _get_accounts_with_balances(access_token: str, profile=None) -> list[dict]:

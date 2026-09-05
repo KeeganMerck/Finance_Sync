@@ -10,13 +10,15 @@ Adding a new pipeline stage means adding one function call here.
 Pipeline stages (in order):
   1. Load transactions   — sync.py
   1b. Fetch balances     — balance.py (account balance snapshots)
+  1c. Fetch investments   — balance.py (investment holdings from Plaid)
+  1d. Fetch investment transactions — balance.py (transaction history for cost basis)
   2. Categorize          — categorizer.py (normalize merchants, apply overrides)
   3. Persist             — database.py    (SQLite upsert; skipped if disabled)
   4. Export              — export.py      (cash_flow.csv + raw_transactions.csv)
   5. Log summary         — stdout + sync.log
 
 Dry run mode (DRY_RUN=True in config.py):
-  Stages 1, 1b, and 2 run normally so categorization logic can be verified.
+  Stages 1, 1b, 1c, and 2 run normally so categorization logic can be verified.
   Stage 3 (database) and Stage 4 (export) log what they would do without
   writing anything to disk.
 """
@@ -31,7 +33,7 @@ from .modules.categorizer import categorize_transactions, load_rules
 from .modules.database import get_all_transactions, init_db, upsert_transactions
 from .modules.export import run_exports
 from .modules.google_sheets import update_google_sheet
-from .modules.balance import fetch_balances, fetch_manual_balances, upsert_snapshots as upsert_balance_snapshots, export_to_sheets as export_balances_to_sheets
+from .modules.balance import fetch_balances, fetch_manual_balances, upsert_snapshots as upsert_balance_snapshots, export_to_sheets as export_balances_to_sheets, fetch_investments, upsert_investment_holdings, fetch_investment_transactions
 
 
 # ─── Logging Configuration ─────────────────────────────────────────────────────
@@ -65,7 +67,7 @@ def configure_logging() -> None:
 
 # ─── Pipeline ──────────────────────────────────────────────────────────────────
 
-def run_pipeline(enable_sheets: bool = True) -> None:
+def run_pipeline(enable_sheets: bool = True, sync_transactions: bool = True, sync_investments: bool = True) -> None:
     """
     Execute the full finance sync pipeline end-to-end.
 
@@ -76,6 +78,8 @@ def run_pipeline(enable_sheets: bool = True) -> None:
             credentials and avoids the write quota. Pass True (default) to
             get the full behaviour, i.e. when called from
             ``python -m src.google_sheets``.
+        sync_transactions: When False, skip transaction syncing. Used for selective sync.
+        sync_investments: When False, skip investment holdings syncing. Used for selective sync.
 
     Exits with sys.exit(1) on fatal errors in load or export stages.
     Database errors are non-fatal (logged as warnings) so exports still run
@@ -98,18 +102,22 @@ def run_pipeline(enable_sheets: bool = True) -> None:
     #
     # sync.py abstracts the data source. If USE_PLAID is False, transactions are loaded from a mock JSON file.
     #
-    logger.info("Stage 1/5 — Loading transactions...")
-    try:
-        init_db() # Ensure database is initialized before fetching transactions (for incremental sync)
-        transactions = fetch_transactions()
-    except Exception:
-        logger.exception("Fatal: failed to load transactions. Aborting pipeline.")
-        sys.exit(1)
+    if sync_transactions:
+        logger.info("Stage 1/5 — Loading transactions...")
+        try:
+            init_db() # Ensure database is initialized before fetching transactions (for incremental sync)
+            transactions = fetch_transactions()
+        except Exception:
+            logger.exception("Fatal: failed to load transactions. Aborting pipeline.")
+            sys.exit(1)
 
-    if not transactions:
-        logger.warning("No transactions returned by sync layer — pipeline will produce empty exports.")
+        if not transactions:
+            logger.warning("No transactions returned by sync layer — pipeline will produce empty exports.")
 
-    logger.info(f"  Loaded {len(transactions)} transaction(s).")
+        logger.info(f"  Loaded {len(transactions)} transaction(s).")
+    else:
+        logger.info("Stage 1/5 — Transaction sync disabled (sync_transactions=False).")
+        transactions = []
 
     # ── Stage 1b: Fetch and Store Account Balances ─────────────────────────────
     #
@@ -152,6 +160,50 @@ def run_pipeline(enable_sheets: bool = True) -> None:
             "Non-fatal: balance fetch and storage failed. "
             "Continuing to transaction categorization stage."
         )
+
+    # ── Stage 1c: Fetch and Store Investment Holdings ─────────────────────────
+    #
+    # Fetches detailed investment holdings from Plaid investment/brokerage accounts.
+    # Non-fatal: if this stage fails, the pipeline continues to Stage 2.
+    # Transaction pipeline must never be blocked by investment fetch failure.
+    #
+    if sync_investments:
+        logger.info("Stage 1c/5 — Fetching and storing investment holdings...")
+        try:
+            investment_holdings = fetch_investments()
+            if investment_holdings:
+                investment_result = upsert_investment_holdings(investment_holdings)
+                logger.info(f"  Upserted {investment_result['written']} investment holding(s) to SQLite.")
+            else:
+                logger.info("  No investment holdings found (or Plaid disabled).")
+        except Exception:
+            logger.exception(
+                "Non-fatal: investment holdings fetch and storage failed. "
+                "Continuing to transaction categorization stage."
+            )
+        
+        # Stage 1d: Fetch investment transactions for cost basis calculation
+        logger.info("Stage 1d/5 — Fetching and storing investment transactions...")
+        try:
+            from datetime import date, timedelta
+            from .modules.database import upsert_investment_transactions
+            
+            end_date = date.today()
+            start_date = end_date - timedelta(days=730)  # 2 years of history
+            
+            investment_transactions = fetch_investment_transactions(start_date, end_date)
+            if investment_transactions:
+                tx_result = upsert_investment_transactions(investment_transactions)
+                logger.info(f"  Upserted {tx_result['written']} investment transaction(s) to SQLite.")
+            else:
+                logger.info("  No investment transactions found (or Plaid disabled).")
+        except Exception:
+            logger.exception(
+                "Non-fatal: investment transactions fetch and storage failed. "
+                "Continuing to transaction categorization stage."
+            )
+    else:
+        logger.info("Stage 1c/5 — Investment sync disabled (sync_investments=False).")
 
     # ── Stage 2: Categorize & Normalize ──────────────────────────────────────
     #
@@ -228,9 +280,9 @@ def run_pipeline(enable_sheets: bool = True) -> None:
         logger.info("Refreshing Google Sheets table...")
         try:
             if not DRY_RUN and GOOGLE_SHEETS_ENABLED:
-                # Use the already-categorized transactions instead of fetching from DB
-                # This ensures excluded transactions are filtered out
-                sheet_rows = update_google_sheet(transactions)
+                # Use get_all_transactions() to export ALL historical data from database
+                # This ensures the full transaction history is uploaded to Google Sheets
+                sheet_rows = update_google_sheet()
                 logger.info(f"  Updated Google Sheets with {sheet_rows} row(s).")
             elif DRY_RUN:
                 logger.info("  Dry run enabled — skipping Google Sheets update.")

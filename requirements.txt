@@ -8,6 +8,7 @@ python-dotenv>=1.0.0
 #
 # Link setup Flask app for Plaid Link UI
 flask>=3.0.0
+gunicorn>=23.0.0
 #
 # ─── Development / testing ────────────────────────────────────────────────────
 #
@@ -18,3 +19,4 @@ pytest>=8.0.0
 # Google Sheets export integration
 gspread>=6.1.0
 google-auth>=2.36.0
+gunicorn

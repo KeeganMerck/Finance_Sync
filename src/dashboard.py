@@ -1,11 +1,10 @@
 """
 dashboard.py
 ============
-Entry point: run the sync pipeline then serve the web dashboard.
+Entry point for the web dashboard.
 
-On startup this module runs the full finance sync pipeline (transactions,
-balances, CSV exports) with Google Sheets disabled, then starts the Flask
-web server so you immediately see up-to-date data.
+The web server starts without synchronization. Syncs are launched explicitly
+from the dashboard or by the scheduled sync deployment.
 
 Serves six pages:
   /            — Main dashboard (summary cards, mini spend table, charts)
@@ -43,6 +42,7 @@ from flask import Flask, Response, jsonify, render_template, request
 from .core.config import DATABASE_PATH, DASHBOARD_PORT
 from .modules.database import init_db
 from .core.config import ROLLING_SYNC_DAYS
+from .sync_manager import get_sync_status, start_background_sync
 
 _HERE = Path(__file__).resolve().parent
 # Port 5000 is required for Replit's webview; override with DASHBOARD_PORT locally
@@ -1040,6 +1040,19 @@ def api_summary():
     investment = _investment_data()["summary"]
     summary["investments"] = investment
     return jsonify(summary)
+
+
+@app.route("/api/sync", methods=["GET"])
+def api_sync_status():
+    """Return the status of the current dashboard-triggered sync."""
+    return jsonify(get_sync_status())
+
+
+@app.route("/api/sync", methods=["POST"])
+def api_start_sync():
+    """Start a full sync in the background without blocking the web request."""
+    started, status = start_background_sync()
+    return jsonify(status), 202 if started else 409
 
 
 @app.route("/api/spend/monthly")

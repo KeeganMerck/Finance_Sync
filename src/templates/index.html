@@ -5,9 +5,19 @@
 <div class="space-y-8 fade-in">
 
   <!-- ── Page header ── -->
-  <div>
-    <h1 class="text-2xl font-bold text-slate-100">Dashboard</h1>
-    <p class="text-sm text-slate-400 mt-1" id="month-label">Loading…</p>
+  <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <div>
+      <h1 class="text-2xl font-bold text-slate-100">Dashboard</h1>
+      <p class="text-sm text-slate-400 mt-1" id="month-label">Loading…</p>
+    </div>
+    <div class="flex flex-col items-start sm:items-end gap-2">
+      <button id="sync-now-btn"
+              class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:bg-slate-700 disabled:text-slate-500 text-sm font-medium text-white transition-colors">
+        <span id="sync-now-icon">↻</span>
+        <span id="sync-now-label">Sync data now</span>
+      </button>
+      <p id="sync-status" class="text-xs text-slate-500" aria-live="polite"></p>
+    </div>
   </div>
 
   <!-- ── Summary cards ── -->
@@ -99,6 +109,71 @@
 {% block scripts %}
 <script>
 /* ─── Summary cards ─────────────────────────────────────────────────── */
+const syncButton = document.getElementById('sync-now-btn');
+const syncLabel = document.getElementById('sync-now-label');
+const syncIcon = document.getElementById('sync-now-icon');
+const syncStatus = document.getElementById('sync-status');
+let syncPollTimer = null;
+let syncRequested = false;
+
+function renderSyncStatus(status) {
+  if (!status) return;
+  const labels = {
+    idle: 'Ready to sync',
+    running: 'Sync in progress…',
+    completed: 'Sync complete',
+    failed: 'Sync failed',
+    busy: 'Another sync is already running'
+  };
+  const running = status.state === 'running';
+  syncButton.disabled = running;
+  syncLabel.textContent = running ? 'Syncing…' : 'Sync data now';
+  syncIcon.textContent = running ? '⟳' : '↻';
+  syncIcon.classList.toggle('animate-spin', running);
+  syncStatus.textContent = labels[status.state] || status.state;
+  syncStatus.className = `text-xs ${status.state === 'failed' ? 'text-red-400' : status.state === 'completed' ? 'text-emerald-400' : 'text-slate-500'}`;
+  if (status.state === 'failed' && status.error) {
+    syncStatus.textContent += ` ${status.error}`;
+  }
+}
+
+async function refreshSyncStatus() {
+  try {
+    const response = await fetch('/api/sync');
+    const status = await response.json();
+    renderSyncStatus(status);
+    if (status.state === 'running') {
+      clearTimeout(syncPollTimer);
+      syncPollTimer = setTimeout(refreshSyncStatus, 2000);
+    } else if (status.state === 'completed' && syncRequested) {
+      syncRequested = false;
+      window.location.reload();
+    }
+  } catch (_) {
+    syncStatus.textContent = 'Sync status unavailable';
+  }
+}
+
+syncButton.addEventListener('click', async () => {
+  syncButton.disabled = true;
+  syncStatus.textContent = 'Starting sync…';
+  try {
+    const response = await fetch('/api/sync', { method: 'POST' });
+    const status = await response.json();
+    renderSyncStatus(status);
+    if (response.status === 202) {
+      syncRequested = true;
+      refreshSyncStatus();
+    }
+  } catch (_) {
+    syncButton.disabled = false;
+    syncStatus.textContent = 'Could not start sync';
+    syncStatus.className = 'text-xs text-red-400';
+  }
+});
+
+refreshSyncStatus();
+
 fetch('/api/summary')
   .then(r => r.json())
   .then(d => {

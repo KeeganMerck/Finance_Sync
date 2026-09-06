@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+
+{% block title %}Rules - Finance{% endblock %}
+
+{% block content %}
+<div class="space-y-8 fade-in">
+  <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+    <div>
+      <h1 class="text-2xl font-bold text-slate-100">Category Rules</h1>
+      <p class="text-sm text-slate-400 mt-1">Add, edit, test, and remove the CSV rules used during sync.</p>
+    </div>
+    <button id="refresh-rules-btn" class="inline-flex items-center justify-center px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm font-medium text-slate-100 transition-colors">
+      Refresh
+    </button>
+  </div>
+
+  <div id="rules-status" class="hidden rounded-lg border px-4 py-3 text-sm"></div>
+
+  <section class="bg-surface rounded-xl border border-slate-700">
+    <div class="px-6 py-4 border-b border-slate-700">
+      <h2 class="font-semibold text-slate-100" id="form-title">Add Rule</h2>
+      <p class="text-xs text-slate-500 mt-1">Compound rules use fields joined by "and" and pattern parts joined by "|".</p>
+    </div>
+    <form id="rule-form" class="p-6 space-y-5">
+      <input type="hidden" id="rule-id">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Match Type</label>
+          <select id="match_type" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+            <option value="contains">Contains</option>
+            <option value="exact">Exact</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Match Field</label>
+          <select id="match_field" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+            <option value="any">Merchant, description, or account</option>
+            <option value="merchant">Merchant</option>
+            <option value="description">Description</option>
+            <option value="account">Account</option>
+            <option value="institution">Institution</option>
+            <option value="amount">Amount</option>
+            <option value="date">Date</option>
+            <option value="account and merchant">Account and merchant</option>
+            <option value="account and merchant and amount">Account, merchant, and amount</option>
+            <option value="account and merchant and date">Account, merchant, and date</option>
+            <option value="plaid_category">Plaid category</option>
+            <option value="plaid_category_primary">Plaid primary category</option>
+          </select>
+        </div>
+        <div class="md:col-span-2">
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Pattern</label>
+          <input id="pattern" type="text" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="Amazon or Checking|Publix|<=-2000">
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Category</label>
+          <input id="user_category" type="text" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="Groceries">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Normalized Merchant</label>
+          <input id="normalized_merchant" type="text" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="Optional">
+        </div>
+        <label class="flex items-center gap-3 mt-6 text-sm text-slate-300">
+          <input id="exclude" type="checkbox" class="h-4 w-4 rounded border-slate-600 bg-base text-sky-500 focus:ring-sky-500">
+          Exclude matching transactions
+        </label>
+      </div>
+
+      <div class="flex flex-wrap justify-end gap-3 pt-2">
+        <button type="button" id="cancel-edit-btn" class="hidden px-4 py-2 rounded-lg text-sm font-medium text-slate-300 hover:text-slate-100 transition-colors">Cancel Edit</button>
+        <button type="submit" id="save-rule-btn" class="bg-sky-600 hover:bg-sky-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">Add Rule</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="bg-surface rounded-xl border border-slate-700">
+    <div class="px-6 py-4 border-b border-slate-700">
+      <h2 class="font-semibold text-slate-100">Test a Merchant</h2>
+      <p class="text-xs text-slate-500 mt-1">Quickly check simple merchant matching before you save a new rule.</p>
+    </div>
+    <div class="p-6 grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
+      <input id="test-merchant" type="text" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="Merchant or description">
+      <button id="test-rules-btn" class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">Test</button>
+      <div id="test-results" class="hidden md:col-span-2 text-sm"></div>
+    </div>
+  </section>
+
+  <section class="bg-surface rounded-xl border border-slate-700">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700">
+      <div>
+        <h2 class="font-semibold text-slate-100">Existing Rules</h2>
+        <p class="text-xs text-slate-500 mt-1">Rules are evaluated from top to bottom during sync.</p>
+      </div>
+      <span id="rules-count" class="text-xs text-slate-500"></span>
+    </div>
+    <div id="rules-table-wrap" class="p-4 table-scroll">
+      <div class="spinner"></div>
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let rules = [];
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[char]));
+}
+
+function showStatus(type, message) {
+  const box = document.getElementById('rules-status');
+  const styles = {
+    success: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300',
+    error: 'border-red-500/40 bg-red-500/10 text-red-300',
+    info: 'border-sky-500/40 bg-sky-500/10 text-sky-300'
+  };
+  box.className = `rounded-lg border px-4 py-3 text-sm ${styles[type] || styles.info}`;
+  box.textContent = message;
+  box.classList.remove('hidden');
+}
+
+function ruleFromForm() {
+  return {
+    match_type: document.getElementById('match_type').value,
+    match_field: document.getElementById('match_field').value,
+    pattern: document.getElementById('pattern').value.trim(),
+    user_category: document.getElementById('user_category').value.trim(),
+    normalized_merchant: document.getElementById('normalized_merchant').value.trim(),
+    exclude: document.getElementById('exclude').checked
+  };
+}
+
+function resetForm() {
+  document.getElementById('rule-form').reset();
+  document.getElementById('match_type').value = 'contains';
+  document.getElementById('rule-id').value = '';
+  document.getElementById('form-title').textContent = 'Add Rule';
+  document.getElementById('save-rule-btn').textContent = 'Add Rule';
+  document.getElementById('cancel-edit-btn').classList.add('hidden');
+}
+
+async function loadRules() {
+  const wrap = document.getElementById('rules-table-wrap');
+  wrap.innerHTML = '<div class="spinner"></div>';
+
+  try {
+    const response = await fetch('/api/rules');
+    const data = await response.json();
+    if (!data.success) throw new Error(data.error || 'Could not load rules');
+    rules = data.rules;
+    renderRules();
+  } catch (error) {
+    wrap.innerHTML = `<p class="text-sm text-red-400 p-2">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function renderRules() {
+  document.getElementById('rules-count').textContent = `${rules.length} rule${rules.length === 1 ? '' : 's'}`;
+  const wrap = document.getElementById('rules-table-wrap');
+
+  if (!rules.length) {
+    wrap.innerHTML = '<p class="text-sm text-slate-500 p-2">No active rules found.</p>';
+    return;
+  }
+
+  wrap.innerHTML = `
+    <table class="w-full text-sm">
+      <thead>
+        <tr>
+          <th class="text-left text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Type</th>
+          <th class="text-left text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Field</th>
+          <th class="text-left text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Pattern</th>
+          <th class="text-left text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Category</th>
+          <th class="text-left text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Merchant</th>
+          <th class="text-left text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Mode</th>
+          <th class="text-right text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rules.map(rule => `
+          <tr class="border-b border-slate-700/50 hover:bg-slate-800/40">
+            <td class="px-3 py-3"><span class="px-2 py-1 rounded bg-slate-700 text-slate-300 text-xs">${escapeHtml(rule.match_type)}</span></td>
+            <td class="px-3 py-3 text-slate-300">${escapeHtml(rule.match_field)}</td>
+            <td class="px-3 py-3 text-sky-300"><code>${escapeHtml(rule.pattern)}</code></td>
+            <td class="px-3 py-3 text-slate-100 font-medium">${escapeHtml(rule.user_category || '-')}</td>
+            <td class="px-3 py-3 text-slate-400">${escapeHtml(rule.normalized_merchant || '-')}</td>
+            <td class="px-3 py-3">
+              <span class="px-2 py-1 rounded text-xs ${String(rule.exclude).toLowerCase() === 'true' ? 'bg-red-500/10 text-red-300' : 'bg-emerald-500/10 text-emerald-300'}">
+                ${String(rule.exclude).toLowerCase() === 'true' ? 'Exclude' : 'Categorize'}
+              </span>
+            </td>
+            <td class="px-3 py-3 text-right whitespace-nowrap">
+              <button class="text-xs text-sky-400 hover:text-sky-300 mr-3" onclick="editRule(${Number(rule.id)})">Edit</button>
+              <button class="text-xs text-red-400 hover:text-red-300" onclick="deleteRule(${Number(rule.id)})">Delete</button>
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>`;
+}
+
+async function saveRule(event) {
+  event.preventDefault();
+  const rule = ruleFromForm();
+  const id = document.getElementById('rule-id').value;
+  const editing = id !== '';
+
+  try {
+    const response = await fetch(editing ? `/api/rules/${id}` : '/api/rules', {
+      method: editing ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rule)
+    });
+    const data = await response.json();
+    if (!data.success) throw new Error(data.error || 'Could not save rule');
+    showStatus('success', editing ? 'Rule updated.' : 'Rule added.');
+    resetForm();
+    loadRules();
+  } catch (error) {
+    showStatus('error', error.message);
+  }
+}
+
+function editRule(id) {
+  const rule = rules.find(item => Number(item.id) === Number(id));
+  if (!rule) return;
+
+  document.getElementById('rule-id').value = rule.id;
+  document.getElementById('match_type').value = rule.match_type || 'contains';
+  document.getElementById('match_field').value = rule.match_field || 'any';
+  document.getElementById('pattern').value = rule.pattern || '';
+  document.getElementById('user_category').value = rule.user_category || '';
+  document.getElementById('normalized_merchant').value = rule.normalized_merchant || '';
+  document.getElementById('exclude').checked = String(rule.exclude).toLowerCase() === 'true';
+  document.getElementById('form-title').textContent = 'Edit Rule';
+  document.getElementById('save-rule-btn').textContent = 'Save Changes';
+  document.getElementById('cancel-edit-btn').classList.remove('hidden');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function deleteRule(id) {
+  if (!confirm('Delete this rule from category_rules.csv?')) return;
+
+  try {
+    const response = await fetch(`/api/rules/${id}`, { method: 'DELETE' });
+    const data = await response.json();
+    if (!data.success) throw new Error(data.error || 'Could not delete rule');
+    showStatus('success', 'Rule deleted.');
+    loadRules();
+  } catch (error) {
+    showStatus('error', error.message);
+  }
+}
+
+function testRules() {
+  const merchant = document.getElementById('test-merchant').value.trim().toLowerCase();
+  const results = document.getElementById('test-results');
+  if (!merchant) {
+    showStatus('error', 'Enter a merchant or description to test.');
+    return;
+  }
+
+  const matches = rules.filter(rule => {
+    const pattern = String(rule.pattern || '').toLowerCase();
+    if (String(rule.match_field || '').includes(' and ')) return false;
+    return rule.match_type === 'exact' ? merchant === pattern : merchant.includes(pattern);
+  });
+
+  results.className = 'md:col-span-2 text-sm rounded-lg border border-slate-700 bg-base p-4';
+  results.innerHTML = matches.length
+    ? matches.map(rule => `<p class="text-slate-300">Matches <span class="text-sky-300">${escapeHtml(rule.pattern)}</span> -> <span class="text-slate-100 font-medium">${escapeHtml(rule.user_category || 'no category')}</span></p>`).join('')
+    : '<p class="text-slate-500">No simple merchant matches found.</p>';
+}
+
+document.getElementById('rule-form').addEventListener('submit', saveRule);
+document.getElementById('cancel-edit-btn').addEventListener('click', resetForm);
+document.getElementById('refresh-rules-btn').addEventListener('click', loadRules);
+document.getElementById('test-rules-btn').addEventListener('click', testRules);
+resetForm();
+loadRules();
+</script>
+{% endblock %}

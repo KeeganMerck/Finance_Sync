@@ -69,6 +69,7 @@ VALID_MATCH_FIELDS = {
     'plaid_category',
     'plaid_category_primary',
     'day_of_month',  # extracts day from date (YYYY-MM-DD), 2-digit zero-padded
+    'date',
     'amount',  # numeric amount for threshold matching (pattern like ">2000" or "<-100")
 }
 
@@ -188,6 +189,9 @@ def load_rules(rules_path: Path = RULES_CSV_PATH) -> list[CategoryRule]:
 
 def _get_field_value(field_name: str, transaction: dict) -> str:
     """Return a normalized string value for a supported match field."""
+    if field_name == 'date':
+        return (transaction.get('date') or '').strip()
+
     if field_name == 'day_of_month':
         date_str = (transaction.get('date') or '').strip()
         if len(date_str) >= 10:
@@ -245,6 +249,9 @@ def _pattern_matches(pattern: str, value: str, match_type: str) -> bool:
     if not pattern:
         return False
 
+    if _looks_like_date_pattern(pattern):
+        return _date_pattern_matches(pattern, value)
+
     alternatives = [segment.strip().upper() for segment in pattern.split('|') if segment.strip()]
     if not alternatives:
         return False
@@ -288,6 +295,43 @@ def _pattern_matches(pattern: str, value: str, match_type: str) -> bool:
 
     if match_type == 'contains':
         return any(alt in value.upper() for alt in alternatives)
+
+    return False
+
+
+def _looks_like_date_pattern(pattern: str) -> bool:
+    trimmed = pattern.strip()
+    comparison_value = trimmed[2:] if trimmed.startswith(('>=', '<=', '==', '!=')) else trimmed[1:] if trimmed.startswith(('>', '<')) else trimmed
+    return (
+        '..' in trimmed
+        or (len(comparison_value) >= 10 and comparison_value[:4].isdigit() and comparison_value[4] == '-')
+    )
+
+
+def _date_pattern_matches(pattern: str, value: str) -> bool:
+    value = (value or '').strip()[:10]
+    if len(value) != 10:
+        return False
+
+    for alt in [segment.strip() for segment in pattern.split('|') if segment.strip()]:
+        if '..' in alt:
+            start, end = [part.strip() for part in alt.split('..', 1)]
+            if (not start or value >= start[:10]) and (not end or value <= end[:10]):
+                return True
+        elif alt.startswith('>=') and value >= alt[2:12]:
+            return True
+        elif alt.startswith('<=') and value <= alt[2:12]:
+            return True
+        elif alt.startswith('>') and value > alt[1:11]:
+            return True
+        elif alt.startswith('<') and value < alt[1:11]:
+            return True
+        elif alt.startswith('==') and value == alt[2:12]:
+            return True
+        elif alt.startswith('!=') and value != alt[2:12]:
+            return True
+        elif value == alt[:10]:
+            return True
 
     return False
 

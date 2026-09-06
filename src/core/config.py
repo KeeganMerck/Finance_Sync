@@ -163,6 +163,34 @@ class PlaidProfile:
                     tokens[institution_name] = os.getenv(key)
         return tokens
 
+    @property
+    def institutions_from_db(self) -> dict[str, str]:
+        """Extract institution access tokens from database (fallback for web-based management)."""
+        try:
+            from ..modules.database import get_plaid_tokens, ENABLE_DATABASE
+            if not ENABLE_DATABASE:
+                return {}
+            
+            db_tokens = get_plaid_tokens(active_only=True)
+            # Filter tokens by environment if specified
+            if self.env:
+                db_tokens = [t for t in db_tokens if t.get('environment') == self.env]
+            
+            return {t['institution_name']: t['access_token'] for t in db_tokens}
+        except Exception:
+            # If database is not available or fails, return empty dict
+            return {}
+
+    @property
+    def all_institutions(self) -> dict[str, str]:
+        """Get institutions from both environment and database, with environment taking precedence."""
+        env_tokens = self.institutions
+        db_tokens = self.institutions_from_db
+        
+        # Environment tokens take precedence
+        all_tokens = {**db_tokens, **env_tokens}
+        return all_tokens
+
 
 def _csv_env(name: str) -> list[str]:
     return [

@@ -199,7 +199,7 @@ def fetch_investments() -> list[dict]:
 
     for profile in profiles:
         try:
-            institutions = profile.institutions
+            institutions = profile.all_institutions
             if not institutions:
                 logger.debug(f"{profile.name}: no institutions found, skipping investments fetch")
                 continue
@@ -268,7 +268,7 @@ def fetch_investment_transactions(start_date: date, end_date: date) -> list[dict
 
     for profile in profiles:
         try:
-            institutions = profile.institutions
+            institutions = profile.all_institutions
             if not institutions:
                 logger.debug(f"{profile.name}: no institutions found, skipping investment transactions fetch")
                 continue

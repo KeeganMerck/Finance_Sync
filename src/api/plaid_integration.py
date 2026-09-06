@@ -139,12 +139,7 @@ def get_access_tokens(profile: Optional[PlaidProfile] = None) -> dict[str, str]:
     """
     profile = profile or get_default_plaid_profile()
     prefix = profile.token_prefix
-    tokens = {}
-
-    for key, value in os.environ.items():
-        if key.startswith(prefix) and value:
-            institution_name = key[len(prefix):]
-            tokens[institution_name] = value
+    tokens = profile.all_institutions
 
     if not tokens:
         logger.warning(

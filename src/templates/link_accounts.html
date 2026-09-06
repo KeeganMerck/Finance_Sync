@@ -1,0 +1,224 @@
+{% extends "base.html" %}
+
+{% block title %}Link Accounts - Finance{% endblock %}
+
+{% block content %}
+<div class="space-y-8 fade-in">
+  <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+    <div>
+      <h1 class="text-2xl font-bold text-slate-100">Link Accounts</h1>
+      <p class="text-sm text-slate-400 mt-1">Connect institutions through Plaid Link and save tokens for future syncs.</p>
+    </div>
+    <button id="plaid-link-btn"
+            class="inline-flex items-center justify-center px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:bg-slate-700 disabled:text-slate-500 text-sm font-medium text-white transition-colors">
+      Open Plaid Link
+    </button>
+  </div>
+
+  <div id="status-message" class="hidden rounded-lg border px-4 py-3 text-sm"></div>
+
+  <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+    <section class="xl:col-span-2 bg-surface rounded-xl border border-slate-700">
+      <div class="px-6 py-4 border-b border-slate-700">
+        <h2 class="font-semibold text-slate-100">Connection Flow</h2>
+        <p class="text-xs text-slate-500 mt-1">New institutions are saved to SQLite and mirrored into your local .env file.</p>
+      </div>
+      <div class="p-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="bg-base border border-slate-700 rounded-lg p-4">
+          <p class="text-xs text-slate-500 uppercase tracking-wider">Step 1</p>
+          <p class="text-sm text-slate-200 mt-2 font-medium">Start Link</p>
+          <p class="text-xs text-slate-500 mt-1">Create a short-lived Plaid Link token from your configured credentials.</p>
+        </div>
+        <div class="bg-base border border-slate-700 rounded-lg p-4">
+          <p class="text-xs text-slate-500 uppercase tracking-wider">Step 2</p>
+          <p class="text-sm text-slate-200 mt-2 font-medium">Authenticate</p>
+          <p class="text-xs text-slate-500 mt-1">Choose an institution and complete Plaid's secure account flow.</p>
+        </div>
+        <div class="bg-base border border-slate-700 rounded-lg p-4">
+          <p class="text-xs text-slate-500 uppercase tracking-wider">Step 3</p>
+          <p class="text-sm text-slate-200 mt-2 font-medium">Sync Later</p>
+          <p class="text-xs text-slate-500 mt-1">The app stores the access token so normal transaction and investment syncs can use it.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="bg-surface rounded-xl border border-slate-700">
+      <div class="px-6 py-4 border-b border-slate-700">
+        <h2 class="font-semibold text-slate-100">Plaid Config</h2>
+        <p class="text-xs text-slate-500 mt-1">Read from the current environment.</p>
+      </div>
+      <div class="p-6 space-y-3 text-sm">
+        <div class="flex items-center justify-between gap-4">
+          <span class="text-slate-400">Environment</span>
+          <span class="font-medium text-slate-100">{{ PLAID_ENV or "Not set" }}</span>
+        </div>
+        <div class="flex items-center justify-between gap-4">
+          <span class="text-slate-400">Client ID</span>
+          <span class="font-medium {{ 'text-emerald-400' if PLAID_CLIENT_ID else 'text-red-400' }}">{{ "Configured" if PLAID_CLIENT_ID else "Missing" }}</span>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <section class="bg-surface rounded-xl border border-slate-700">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700">
+      <div>
+        <h2 class="font-semibold text-slate-100">Connected Institutions</h2>
+        <p class="text-xs text-slate-500 mt-1">Active entries are used by future Plaid syncs.</p>
+      </div>
+      <button id="refresh-tokens-btn" class="text-xs text-sky-400 hover:text-sky-300 transition-colors">Refresh</button>
+    </div>
+    <div id="linked-institutions" class="p-4">
+      <div class="spinner"></div>
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+<script>
+const plaidButton = document.getElementById('plaid-link-btn');
+const statusBox = document.getElementById('status-message');
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[char]));
+}
+
+function showStatus(type, message) {
+  const styles = {
+    success: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300',
+    error: 'border-red-500/40 bg-red-500/10 text-red-300',
+    info: 'border-sky-500/40 bg-sky-500/10 text-sky-300'
+  };
+  statusBox.className = `rounded-lg border px-4 py-3 text-sm ${styles[type] || styles.info}`;
+  statusBox.textContent = message;
+  statusBox.classList.remove('hidden');
+}
+
+async function loadLinkedInstitutions() {
+  const container = document.getElementById('linked-institutions');
+  container.innerHTML = '<div class="spinner"></div>';
+
+  try {
+    const response = await fetch('/api/plaid/tokens');
+    const data = await response.json();
+    if (!data.success) throw new Error(data.error || 'Could not load institutions');
+
+    if (!data.tokens.length) {
+      container.innerHTML = '<p class="text-sm text-slate-500 p-2">No institutions linked yet.</p>';
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="table-scroll">
+        <table class="w-full text-sm">
+          <thead>
+            <tr>
+              <th class="text-left text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Institution</th>
+              <th class="text-left text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Environment</th>
+              <th class="text-left text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Saved</th>
+              <th class="text-left text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Status</th>
+              <th class="text-right text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.tokens.map(token => {
+              const active = Number(token.is_active) === 1;
+              return `
+                <tr class="border-b border-slate-700/50">
+                  <td class="px-3 py-3 text-slate-100 font-medium">${escapeHtml(token.institution_name)}</td>
+                  <td class="px-3 py-3 text-slate-400">${escapeHtml(token.environment || '')}</td>
+                  <td class="px-3 py-3 text-slate-400">${escapeHtml((token.created_at || '').slice(0, 10))}</td>
+                  <td class="px-3 py-3">
+                    <span class="px-2 py-1 rounded text-xs ${active ? 'bg-emerald-500/10 text-emerald-300' : 'bg-slate-700 text-slate-400'}">
+                      ${active ? 'Active' : 'Inactive'}
+                    </span>
+                  </td>
+                  <td class="px-3 py-3 text-right">
+                    ${active ? `<button class="text-xs text-red-400 hover:text-red-300" onclick="deleteToken('${encodeURIComponent(token.institution_name)}')">Remove</button>` : ''}
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>`;
+  } catch (error) {
+    container.innerHTML = `<p class="text-sm text-red-400 p-2">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function deleteToken(encodedInstitutionName) {
+  const institutionName = decodeURIComponent(encodedInstitutionName);
+  if (!confirm(`Remove ${institutionName} from active sync tokens?`)) return;
+
+  try {
+    const response = await fetch(`/api/plaid/tokens/${encodeURIComponent(institutionName)}`, { method: 'DELETE' });
+    const data = await response.json();
+    if (!data.success) throw new Error(data.error || 'Could not remove token');
+    showStatus('success', data.message);
+    loadLinkedInstitutions();
+  } catch (error) {
+    showStatus('error', error.message);
+  }
+}
+
+async function openPlaidLink() {
+  plaidButton.disabled = true;
+  plaidButton.textContent = 'Preparing Link...';
+  showStatus('info', 'Creating a Plaid Link token...');
+
+  try {
+    const response = await fetch('/api/plaid/create-link-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const data = await response.json();
+    if (!data.success) throw new Error(data.error || 'Could not create link token');
+
+    const handler = Plaid.create({
+      token: data.link_token,
+      onSuccess: async (publicToken, metadata) => {
+        try {
+          const institutionName = metadata?.institution?.name || 'Plaid Institution';
+          showStatus('info', `Saving ${institutionName}...`);
+
+          const exchange = await fetch('/api/plaid/link-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              public_token: publicToken,
+              institution_name: institutionName,
+              environment: data.environment
+            })
+          });
+          const result = await exchange.json();
+          if (!result.success) throw new Error(result.error || 'Could not save access token');
+          showStatus('success', `${institutionName} linked. Saved as ${result.env_key}.`);
+          loadLinkedInstitutions();
+        } catch (error) {
+          showStatus('error', error.message);
+        }
+      },
+      onExit: (err) => {
+        if (err) showStatus('error', err.error_message || 'Plaid Link closed with an error');
+      }
+    });
+
+    handler.open();
+  } catch (error) {
+    showStatus('error', error.message);
+  } finally {
+    plaidButton.disabled = false;
+    plaidButton.textContent = 'Open Plaid Link';
+  }
+}
+
+plaidButton.addEventListener('click', openPlaidLink);
+document.getElementById('refresh-tokens-btn').addEventListener('click', loadLinkedInstitutions);
+loadLinkedInstitutions();
+</script>
+{% endblock %}

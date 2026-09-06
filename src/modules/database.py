@@ -298,6 +298,25 @@ _CREATE_INVESTMENT_BASIS_INDEX = """
     ON investment_basis_entries(account_id, security_id, symbol);
 """
 
+# Plaid tokens table for storing access tokens instead of .env file
+_CREATE_PLAID_TOKENS_TABLE = """
+    CREATE TABLE IF NOT EXISTS plaid_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        institution_name TEXT NOT NULL UNIQUE,
+        access_token TEXT NOT NULL,
+        item_id TEXT,
+        environment TEXT DEFAULT 'production',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
+        is_active INTEGER DEFAULT 1
+    );
+"""
+
+_CREATE_PLAID_TOKENS_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_plaid_tokens_institution
+    ON plaid_tokens(institution_name);
+"""
+
 
 # ─── Connection Management ─────────────────────────────────────────────────────
 
@@ -398,6 +417,9 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
 
         # Initialize manual investment acquisition-basis entries
         init_investment_basis_entries(db_path)
+
+        # Initialize Plaid tokens table
+        init_plaid_tokens(db_path)
 
     logger.info("Database schema initialized successfully.")
 
@@ -927,6 +949,185 @@ def init_investment_basis_entries(db_path: Path = DATABASE_PATH) -> None:
         conn.execute(_CREATE_INVESTMENT_BASIS_INDEX)
 
     logger.debug("Investment basis entries table initialized successfully.")
+
+
+def init_plaid_tokens(db_path: Path = DATABASE_PATH) -> None:
+    """Create the Plaid tokens table if it doesn't already exist."""
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping Plaid tokens init.")
+        return
+
+    with _get_connection(db_path) as conn:
+        conn.execute(_CREATE_PLAID_TOKENS_TABLE)
+        conn.execute(_CREATE_PLAID_TOKENS_INDEX)
+
+    logger.debug("Plaid tokens table initialized successfully.")
+
+
+def upsert_plaid_token(institution_name: str, access_token: str, item_id: str = None, 
+                       environment: str = 'production', db_path: Path = DATABASE_PATH) -> bool:
+    """
+    Add or update a Plaid access token in the database.
+
+    Args:
+        institution_name: Name of the institution (e.g., ROBINHOOD, CHASE)
+        access_token: Plaid access token
+        item_id: Plaid item ID (optional)
+        environment: Environment (production/sandbox)
+        db_path: Path to the database
+
+    Returns:
+        True if successful, False otherwise
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping Plaid token upsert.")
+        return False
+
+    try:
+        with _get_connection(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO plaid_tokens (institution_name, access_token, item_id, environment, last_updated)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(institution_name) DO UPDATE SET
+                    access_token = excluded.access_token,
+                    item_id = excluded.item_id,
+                    environment = excluded.environment,
+                    last_updated = excluded.last_updated,
+                    is_active = 1
+                """,
+                (institution_name, access_token, item_id, environment)
+            )
+            conn.commit()
+        logger.info(f"Plaid token upserted for {institution_name}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to upsert Plaid token for {institution_name}: {e}")
+        return False
+
+
+def get_plaid_tokens(db_path: Path = DATABASE_PATH, active_only: bool = True) -> list[dict]:
+    """
+    Get all Plaid tokens from the database.
+
+    Args:
+        db_path: Path to the database
+        active_only: If True, only return active tokens
+
+    Returns:
+        List of token dicts
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — returning empty Plaid tokens list.")
+        return []
+
+    try:
+        with _get_connection(db_path) as conn:
+            if active_only:
+                cursor = conn.execute(
+                    "SELECT institution_name, access_token, item_id, environment, created_at, last_updated FROM plaid_tokens WHERE is_active = 1"
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT institution_name, access_token, item_id, environment, created_at, last_updated, is_active FROM plaid_tokens"
+                )
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to get Plaid tokens: {e}")
+        return []
+
+
+def delete_plaid_token(institution_name: str, db_path: Path = DATABASE_PATH) -> bool:
+    """
+    Delete or deactivate a Plaid token.
+
+    Args:
+        institution_name: Name of the institution
+        db_path: Path to the database
+
+    Returns:
+        True if successful, False otherwise
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping Plaid token deletion.")
+        return False
+
+    try:
+        with _get_connection(db_path) as conn:
+            conn.execute(
+                "UPDATE plaid_tokens SET is_active = 0 WHERE institution_name = ?",
+                (institution_name,)
+            )
+            conn.commit()
+        logger.info(f"Plaid token deactivated for {institution_name}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to delete Plaid token for {institution_name}: {e}")
+        return False
+
+
+def migrate_env_tokens_to_db(env_file_path: Path, db_path: Path = DATABASE_PATH) -> dict:
+    """
+    Migrate Plaid tokens from .env file to database.
+
+    Args:
+        env_file_path: Path to .env file
+        db_path: Path to the database
+
+    Returns:
+        Dict with migration results
+    """
+    try:
+        from dotenv import load_dotenv
+        
+        # Load .env file
+        load_dotenv(env_file_path)
+        
+        # Get all Plaid tokens from environment
+        import os
+        plaid_tokens = {}
+        for key, value in os.environ.items():
+            if key.startswith('PLAID_') and 'TOKEN' in key:
+                # Extract institution name from key (format: PLAID_PRODUCTION_TOKEN_INSTITUTIONNAME)
+                parts = key.split('_')
+                if len(parts) >= 4 and parts[-1] == 'TOKEN':
+                    institution_name = parts[-2]
+                    environment = parts[1] if parts[1] in ['PRODUCTION', 'SANDBOX'] else 'production'
+                    plaid_tokens[institution_name] = {
+                        'access_token': value,
+                        'environment': environment
+                    }
+        
+        migrated_count = 0
+        failed_count = 0
+        
+        for institution_name, token_data in plaid_tokens.items():
+            if upsert_plaid_token(
+                institution_name, 
+                token_data['access_token'],
+                environment=token_data['environment'],
+                db_path=db_path
+            ):
+                migrated_count += 1
+            else:
+                failed_count += 1
+        
+        return {
+            'success': True,
+            'migrated': migrated_count,
+            'failed': failed_count,
+            'total': len(plaid_tokens)
+        }
+    except Exception as e:
+        logger.error(f"Failed to migrate tokens from .env to database: {e}")
+        return {
+            'success': False,
+            'error': str(e),
+            'migrated': 0,
+            'failed': 0,
+            'total': 0
+        }
 
 
 def upsert_manual_transaction(transaction: dict, db_path: Path = DATABASE_PATH) -> None:

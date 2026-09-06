@@ -39,8 +39,8 @@ from typing import Any
 from flask import Flask, Response, jsonify, render_template, request
 
 # ── Config ────────────────────────────────────────────────────────────────────
-from .core.config import DATABASE_PATH, DASHBOARD_PORT
-from .modules.database import init_db
+from .core.config import DATABASE_PATH, DASHBOARD_PORT, PLAID_ENV, PLAID_CLIENT_ID, RULES_CSV_PATH
+from .modules.database import init_db, upsert_plaid_token, get_plaid_tokens, delete_plaid_token
 from .core.config import ROLLING_SYNC_DAYS
 from .sync_manager import get_sync_status, start_background_sync
 
@@ -1017,6 +1017,18 @@ def projections():
     return render_template("projections.html")
 
 
+@app.route("/link-accounts")
+def link_accounts():
+    """Plaid Link setup page integrated into dashboard."""
+    return render_template("link_accounts.html", PLAID_ENV=PLAID_ENV, PLAID_CLIENT_ID=PLAID_CLIENT_ID)
+
+
+@app.route("/rules")
+def rules():
+    """Category rules management page."""
+    return render_template("rules.html")
+
+
 @app.route("/transactions")
 def transactions():
     return render_template("transactions.html")
@@ -1770,6 +1782,339 @@ def api_delete_manual_snapshot():
 def api_projections():
     lookback = int(request.args.get("months", 12))
     return jsonify(_projections(lookback))
+
+
+# ─── Plaid Token Management API ───────────────────────────────────────────────
+
+RULE_FIELDNAMES = [
+    "match_type",
+    "match_field",
+    "pattern",
+    "user_category",
+    "normalized_merchant",
+    "exclude",
+]
+
+
+def _coerce_rule_payload(data: dict[str, Any]) -> dict[str, str]:
+    """Normalize a browser rule payload into the CSV schema."""
+    allowed_match_types = {"exact", "contains"}
+    allowed_fields = {
+        "any",
+        "merchant",
+        "description",
+        "institution",
+        "account",
+        "plaid_category",
+        "plaid_category_primary",
+        "day_of_month",
+        "amount",
+        "date",
+    }
+
+    match_type = str(data.get("match_type", "")).strip().lower()
+    match_field = str(data.get("match_field", "any")).strip().lower() or "any"
+    pattern = str(data.get("pattern", "")).strip()
+    user_category = str(data.get("user_category", "")).strip()
+    normalized_merchant = str(data.get("normalized_merchant", "")).strip()
+    exclude = data.get("exclude", False)
+
+    if match_type not in allowed_match_types:
+        raise ValueError("match_type must be exact or contains")
+    if not pattern:
+        raise ValueError("pattern is required")
+    if not user_category and not normalized_merchant and not exclude:
+        raise ValueError("category, normalized merchant, or exclude is required")
+
+    field_parts = [part.strip() for part in match_field.split(" and ")]
+    if any(part not in allowed_fields for part in field_parts):
+        raise ValueError("match_field contains an unsupported field")
+
+    return {
+        "match_type": match_type,
+        "match_field": " and ".join(field_parts),
+        "pattern": pattern,
+        "user_category": user_category,
+        "normalized_merchant": normalized_merchant,
+        "exclude": "true" if str(exclude).lower() in {"1", "true", "yes", "on"} else "",
+    }
+
+
+def _read_rule_records() -> list[dict[str, Any]]:
+    """Read category_rules.csv while preserving comment and blank rows."""
+    if not RULES_CSV_PATH.exists():
+        return []
+
+    records: list[dict[str, Any]] = []
+    with open(RULES_CSV_PATH, newline="", encoding="utf-8") as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            clean = {field: (row.get(field) or "") for field in RULE_FIELDNAMES}
+            is_rule = bool(clean["match_type"].strip()) and not clean["match_type"].lstrip().startswith("#")
+            records.append({"is_rule": is_rule, "row": clean})
+    return records
+
+
+def _write_rule_records(records: list[dict[str, Any]]) -> None:
+    RULES_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(RULES_CSV_PATH, "w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=RULE_FIELDNAMES)
+        writer.writeheader()
+        for record in records:
+            writer.writerow(record["row"])
+
+
+def _visible_rules(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    visible = []
+    for file_index, record in enumerate(records):
+        if not record["is_rule"]:
+            continue
+        rule = record["row"].copy()
+        rule["id"] = file_index
+        visible.append(rule)
+    return visible
+
+
+def _env_file_path() -> Path:
+    env_path = os.getenv("FINANCE_SYNC_ENV_FILE")
+    if env_path:
+        return Path(env_path)
+
+    candidates = [Path.cwd() / ".env", _HERE.parent / ".env", _HERE.parent.parent / ".env"]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return Path.cwd() / ".env"
+
+
+def _institution_env_key(institution_name: str, environment: str) -> str:
+    safe_name = "".join(ch if ch.isalnum() else "_" for ch in institution_name.upper()).strip("_")
+    safe_name = "_".join(segment for segment in safe_name.split("_") if segment)
+    env_name = (environment or PLAID_ENV or "production").upper()
+    return f"PLAID_{env_name}_TOKEN_{safe_name or 'INSTITUTION'}"
+
+
+def _save_plaid_token_to_env(institution_name: str, access_token: str, environment: str) -> str:
+    from dotenv import set_key
+
+    env_path = _env_file_path()
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    if not env_path.exists():
+        env_path.touch()
+
+    key = _institution_env_key(institution_name, environment)
+    set_key(str(env_path), key, access_token)
+    os.environ[key] = access_token
+    return key
+
+
+@app.route("/api/plaid/tokens")
+def api_plaid_tokens():
+    """Get all Plaid tokens from database."""
+    try:
+        tokens = get_plaid_tokens(active_only=False)
+        return jsonify({"success": True, "tokens": tokens})
+    except Exception as e:
+        logger.exception("Failed to get Plaid tokens")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/plaid/tokens", methods=['POST'])
+def api_upsert_plaid_token():
+    """Add or update a Plaid token."""
+    try:
+        data = request.get_json(silent=True) or {}
+        institution_name = data.get('institution_name')
+        access_token = data.get('access_token')
+        item_id = data.get('item_id')
+        environment = data.get('environment') or PLAID_ENV or 'production'
+        
+        if not institution_name or not access_token:
+            return jsonify({"success": False, "error": "Missing institution_name or access_token"}), 400
+        
+        success = upsert_plaid_token(institution_name, access_token, item_id, environment)
+        if success:
+            env_key = _save_plaid_token_to_env(institution_name, access_token, environment)
+            return jsonify({
+                "success": True,
+                "env_key": env_key,
+                "message": f"Token for {institution_name} saved successfully",
+            })
+        else:
+            return jsonify({"success": False, "error": "Failed to save token"}), 500
+    except Exception as e:
+        logger.exception("Failed to upsert Plaid token")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/plaid/tokens/<institution_name>", methods=['DELETE'])
+def api_delete_plaid_token(institution_name):
+    """Delete/deactivate a Plaid token."""
+    try:
+        success = delete_plaid_token(institution_name)
+        if success:
+            return jsonify({"success": True, "message": f"Token for {institution_name} deactivated"})
+        else:
+            return jsonify({"success": False, "error": "Failed to delete token"}), 500
+    except Exception as e:
+        logger.exception("Failed to delete Plaid token")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/plaid/link-token", methods=['POST'])
+def api_plaid_link_token():
+    """Exchange public token for access token via Plaid API."""
+    try:
+        from .api import plaid_integration
+        
+        data = request.get_json(silent=True) or {}
+        public_token = data.get('public_token')
+        institution_name = data.get('institution_name')
+        environment = data.get('environment') or PLAID_ENV or 'production'
+        
+        if not public_token:
+            return jsonify({"success": False, "error": "Missing public_token"}), 400
+        
+        profile = plaid_integration.get_default_plaid_profile()
+        client = plaid_integration.get_plaid_client(profile)
+
+        from plaid.model.item_public_token_exchange_request import (
+            ItemPublicTokenExchangeRequest,
+        )
+
+        response = client.item_public_token_exchange(
+            ItemPublicTokenExchangeRequest(public_token=public_token)
+        )
+        access_token = response["access_token"]
+        item_id = response["item_id"] if "item_id" in response else None
+        institution_name = institution_name or "Plaid Institution"
+        
+        success = upsert_plaid_token(institution_name, access_token, item_id, environment)
+        
+        if success:
+            env_key = _save_plaid_token_to_env(institution_name, access_token, environment)
+            return jsonify({
+                "success": True, 
+                "item_id": item_id,
+                "env_key": env_key,
+                "message": f"Successfully linked {institution_name}"
+            })
+        else:
+            return jsonify({"success": False, "error": "Failed to save token to database"}), 500
+            
+    except Exception as e:
+        logger.exception("Failed to exchange Plaid public token")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/plaid/create-link-token", methods=['POST'])
+def api_create_link_token():
+    """Create a Plaid link token for the frontend."""
+    try:
+        from .api import plaid_integration
+
+        profile = plaid_integration.get_default_plaid_profile()
+        link_token = plaid_integration.create_link_token(
+            user_id="finance_sync_" + uuid.uuid4().hex,
+            profile=profile,
+        )
+        return jsonify({
+            "success": True,
+            "link_token": link_token,
+            "environment": profile.env,
+            "profile": profile.name,
+        })
+        
+    except Exception as e:
+        logger.exception("Failed to create Plaid link token")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ─── Category Rules Management API ───────────────────────────────────────────────
+
+@app.route("/api/rules")
+def api_rules():
+    """Get all category rules."""
+    try:
+        rules = _visible_rules(_read_rule_records())
+        return jsonify({"success": True, "rules": rules})
+    except Exception as e:
+        logger.exception("Failed to load category rules")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/rules", methods=['POST'])
+def api_add_rule():
+    """Add a new category rule."""
+    try:
+        rule_data = _coerce_rule_payload(request.get_json(silent=True) or {})
+        records = _read_rule_records()
+        records.append({"is_rule": True, "row": rule_data})
+        _write_rule_records(records)
+        
+        return jsonify({"success": True, "message": "Rule added successfully", "rule": rule_data})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        logger.exception("Failed to add category rule")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/rules/<int:rule_id>", methods=['PUT'])
+def api_update_rule(rule_id):
+    """Update a category rule by its file-backed id."""
+    try:
+        rule_data = _coerce_rule_payload(request.get_json(silent=True) or {})
+        records = _read_rule_records()
+        if rule_id < 0 or rule_id >= len(records) or not records[rule_id]["is_rule"]:
+            return jsonify({"success": False, "error": "Invalid rule id"}), 404
+
+        records[rule_id] = {"is_rule": True, "row": rule_data}
+        _write_rule_records(records)
+        return jsonify({"success": True, "message": "Rule updated successfully", "rule": rule_data})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        logger.exception("Failed to update category rule")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/rules/<int:rule_id>", methods=['DELETE'])
+def api_delete_rule(rule_id):
+    """Delete a category rule by its file-backed id."""
+    try:
+        records = _read_rule_records()
+        if rule_id < 0 or rule_id >= len(records) or not records[rule_id]["is_rule"]:
+            return jsonify({"success": False, "error": "Invalid rule id"}), 404
+
+        deleted_rule = records.pop(rule_id)["row"]
+        _write_rule_records(records)
+        return jsonify({"success": True, "message": "Rule deleted successfully", "deleted_rule": deleted_rule})
+    except Exception as e:
+        logger.exception("Failed to delete category rule")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/rules/bulk", methods=['POST'])
+def api_bulk_add_rules():
+    """Add multiple category rules at once."""
+    try:
+        data = request.get_json(silent=True) or {}
+        rules = data.get('rules', [])
+        
+        if not rules:
+            return jsonify({"success": False, "error": "No rules provided"}), 400
+
+        normalized_rules = [_coerce_rule_payload(rule) for rule in rules]
+        records = _read_rule_records()
+        records.extend({"is_rule": True, "row": rule} for rule in normalized_rules)
+        _write_rule_records(records)
+        return jsonify({"success": True, "message": f"Added {len(rules)} rules successfully"})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        logger.exception("Failed to bulk add category rules")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

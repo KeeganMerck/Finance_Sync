@@ -64,9 +64,9 @@
   <!-- ── Navigation ── -->
   <nav class="bg-surface border-b border-slate-700 sticky top-0 z-50">
     <div class="max-w-screen-2xl mx-auto px-6 flex items-center h-14 gap-8">
-      <span class="text-sky-400 font-bold tracking-tight text-lg select-none">
+      <a href="/" class="text-sky-400 font-bold tracking-tight text-lg select-none hover:text-sky-300 transition-colors">
         💰 Finance
-      </span>
+      </a>
       <div class="flex gap-1 text-sm">
         {% set nav = [
           ('/', 'Dashboard'),
@@ -135,6 +135,55 @@
           if (el) el.textContent = 'Last sync: ' + d.last_sync.slice(0,10);
         }
       }).catch(() => {});
+
+    /* ── Cross-page manual snapshot update polling ───────────────── */
+    (function(){
+      let last = null;
+      const check = () => {
+        fetch('/api/changes/last_manual_snapshot_update')
+          .then(r => r.json())
+          .then(d => {
+            const v = d.last_manual_snapshot_update || null;
+            if (v && v !== last) {
+              last = v;
+              // Broadcast a small event for pages to refresh lightweight data
+              window.dispatchEvent(new CustomEvent('app:manualSnapshotUpdated', { detail: { ts: v } }));
+            }
+          }).catch(() => {});
+      };
+      // Check every 8s; this is cheap (single scalar) and keeps pages responsive without heavy sync
+      setInterval(check, 8000);
+      // Also check when tab becomes visible and notify pages that the tab is active
+      document.addEventListener('visibilitychange', () => { 
+        if (!document.hidden) {
+          // let pages decide what to reload when tab becomes visible
+          window.dispatchEvent(new CustomEvent('app:tabVisible'));
+          check();
+        }
+      });
+      // Listen for storage changes from other tabs and broadcast the same event
+      window.addEventListener('storage', (e) => {
+        if (e.key === 'last_manual_snapshot_update') {
+          const v = e.newValue || null;
+          if (v) {
+            window.dispatchEvent(new CustomEvent('app:manualSnapshotUpdated', { detail: { ts: v } }));
+          }
+        }
+      });
+      // Use BroadcastChannel when available for lower-latency cross-tab messages
+      try {
+        if (typeof BroadcastChannel !== 'undefined') {
+          const bc = new BroadcastChannel('finance_sync_updates');
+          bc.addEventListener('message', (ev) => {
+            if (ev?.data?.type === 'manualSnapshotUpdated') {
+              window.dispatchEvent(new CustomEvent('app:manualSnapshotUpdated', { detail: { ts: ev.data.ts } }));
+            }
+          });
+        }
+      } catch (e) {
+        /* ignore */
+      }
+    })();
   </script>
 
   {% block scripts %}{% endblock %}

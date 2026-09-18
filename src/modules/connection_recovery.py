@@ -27,7 +27,6 @@ manually; the flow still waits for their Enter confirmation.
 
 import json
 import logging
-import os
 import platform
 import queue
 import subprocess
@@ -36,7 +35,6 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +63,7 @@ _LOGIN_ERROR_STATUS = 400
 
 # ─── Error Detection ──────────────────────────────────────────────────────────
 
+
 def is_login_error(exc: Exception) -> bool:
     """
     Return True if *exc* is a Plaid ApiException with an ``error_code`` that
@@ -74,28 +73,29 @@ def is_login_error(exc: Exception) -> bool:
     alone is not used — Plaid returns 400 for many non-credential errors
     (e.g. INVALID_REQUEST, INVALID_FIELD) that are not fixable by re-linking.
     """
-    body = getattr(exc, 'body', None)
+    body = getattr(exc, "body", None)
     if not body:
         return False
     try:
         data = json.loads(body) if isinstance(body, (str, bytes)) else body
-        return data.get('error_code', '') in _LOGIN_ERROR_CODES
+        return data.get("error_code", "") in _LOGIN_ERROR_CODES
     except Exception:
         return False
 
 
 # ─── Timed stdin ──────────────────────────────────────────────────────────────
 
+
 def _stdin_reader(result_queue: "queue.Queue[str]") -> None:
     """Daemon thread: read one line from stdin and put it in the queue."""
     try:
         line = sys.stdin.readline()
-        result_queue.put(line.strip().lower() if line else '')
+        result_queue.put(line.strip().lower() if line else "")
     except Exception:
-        result_queue.put('')
+        result_queue.put("")
 
 
-def timed_input(prompt: str, timeout: int) -> Optional[str]:
+def timed_input(prompt: str, timeout: int) -> str | None:
     """
     Print *prompt* then wait up to *timeout* seconds for a line from stdin.
 
@@ -105,8 +105,8 @@ def timed_input(prompt: str, timeout: int) -> Optional[str]:
     Works on Windows, macOS, and Linux by using a daemon thread so that a
     blocking ``readline()`` does not prevent the countdown from expiring.
     """
-    print(prompt, end='', flush=True)
-    q: "queue.Queue[str]" = queue.Queue()
+    print(prompt, end="", flush=True)
+    q: queue.Queue[str] = queue.Queue()
     t = threading.Thread(target=_stdin_reader, args=(q,), daemon=True)
     t.start()
     try:
@@ -117,12 +117,13 @@ def timed_input(prompt: str, timeout: int) -> Optional[str]:
 
 # ─── link_setup Launcher ──────────────────────────────────────────────────────
 
+
 def _project_root() -> Path:
     """Return the project root (two levels above this file: src/modules/ → root)."""
     return Path(__file__).resolve().parents[2]
 
 
-def _launch_link_setup() -> Optional[subprocess.Popen]:
+def _launch_link_setup() -> subprocess.Popen | None:
     """
     Open link_setup in a **new terminal window** and return the Popen handle.
 
@@ -140,29 +141,38 @@ def _launch_link_setup() -> Optional[subprocess.Popen]:
     system = platform.system()
 
     try:
-        if system == 'Windows':
+        if system == "Windows":
             # 'start' opens a new cmd window; /k keeps it open after the process ends
             full = f'start cmd /k "cd /d "{root}" && {inner_cmd}"'
             proc = subprocess.Popen(full, shell=True, cwd=str(root))
             return proc
 
-        if system == 'Darwin':
+        if system == "Darwin":
             # AppleScript to open a new Terminal.app tab/window
             script = (
                 f'tell application "Terminal" to do script '
                 f'"cd \\"{root}\\" && {inner_cmd}"'
             )
-            proc = subprocess.Popen(['osascript', '-e', script])
+            proc = subprocess.Popen(["osascript", "-e", script])
             return proc
 
         # Linux — try common terminal emulators in preference order
         candidates = [
-            ['gnome-terminal', '--', 'bash', '-c',
-             f'cd "{root}" && {inner_cmd}; echo "Press Enter to close..."; read'],
-            ['xterm', '-e', f'bash -c \'cd "{root}" && {inner_cmd}; read\''],
-            ['konsole', '--noclose', '-e', f'bash -c "cd \\"{root}\\" && {inner_cmd}"'],
-            ['xfce4-terminal', '--hold', '-e',
-             f'bash -c "cd \\"{root}\\" && {inner_cmd}"'],
+            [
+                "gnome-terminal",
+                "--",
+                "bash",
+                "-c",
+                f'cd "{root}" && {inner_cmd}; echo "Press Enter to close..."; read',
+            ],
+            ["xterm", "-e", f"bash -c 'cd \"{root}\" && {inner_cmd}; read'"],
+            ["konsole", "--noclose", "-e", f'bash -c "cd \\"{root}\\" && {inner_cmd}"'],
+            [
+                "xfce4-terminal",
+                "--hold",
+                "-e",
+                f'bash -c "cd \\"{root}\\" && {inner_cmd}"',
+            ],
         ]
         for argv in candidates:
             try:
@@ -181,7 +191,8 @@ def _launch_link_setup() -> Optional[subprocess.Popen]:
 
 # ─── link_setup Shutdown ──────────────────────────────────────────────────────
 
-def _shutdown_link_setup(proc: Optional[subprocess.Popen]) -> None:
+
+def _shutdown_link_setup(proc: subprocess.Popen | None) -> None:
     """
     Stop the link_setup Flask server.
 
@@ -194,7 +205,7 @@ def _shutdown_link_setup(proc: Optional[subprocess.Popen]) -> None:
     # 1. Ask the server to stop itself
     try:
         url = f"http://localhost:{LINK_SETUP_PORT}/shutdown"
-        req = urllib.request.Request(url, data=b'', method='POST')
+        req = urllib.request.Request(url, data=b"", method="POST")
         urllib.request.urlopen(req, timeout=4)
         logger.debug("link_setup /shutdown request sent.")
     except Exception:
@@ -213,6 +224,7 @@ def _shutdown_link_setup(proc: Optional[subprocess.Popen]) -> None:
 
 # ─── Main Interactive Flow ────────────────────────────────────────────────────
 
+
 def prompt_reconnect(institution_name: str, profile_name: str) -> bool:
     """
     Interactive reconnect flow shown in the terminal when a Plaid login error
@@ -221,10 +233,10 @@ def prompt_reconnect(institution_name: str, profile_name: str) -> bool:
     Returns True  → caller should retry fetching this institution.
     Returns False → caller should skip this institution and continue.
     """
-    sep = '─' * 64
+    sep = "─" * 64
     print(f"\n{sep}")
     print(f"  ⚠️  CONNECTION ERROR — {profile_name}/{institution_name}")
-    print(f"  Plaid cannot access this account (credentials need updating).")
+    print("  Plaid cannot access this account (credentials need updating).")
     print(f"{sep}")
 
     # ── Prompt: want to fix it now? ───────────────────────────────────────────
@@ -241,12 +253,12 @@ def prompt_reconnect(institution_name: str, profile_name: str) -> bool:
         )
         return False
 
-    if answer not in ('y', 'yes'):
+    if answer not in ("y", "yes"):
         print(f"  Skipping {institution_name}.\n")
         return False
 
     # ── Launch link_setup ─────────────────────────────────────────────────────
-    print(f"\n  Starting link_setup server...")
+    print("\n  Starting link_setup server...")
     proc = _launch_link_setup()
 
     if proc is None:
@@ -255,7 +267,7 @@ def prompt_reconnect(institution_name: str, profile_name: str) -> bool:
         print(
             f"\n  ⚠️  Could not open a new terminal automatically.\n"
             f"  Please open a second terminal window and run:\n\n"
-            f"      cd \"{root}\"\n"
+            f'      cd "{root}"\n'
             f"      python -m src.link_setup\n"
         )
     else:
@@ -276,7 +288,7 @@ def prompt_reconnect(institution_name: str, profile_name: str) -> bool:
         timeout=600,  # 10 minutes — no reasonable pipeline should wait longer
     )
 
-    if confirmation in ('skip', 's', 'no', 'n', 'cancel'):
+    if confirmation in ("skip", "s", "no", "n", "cancel"):
         print(f"  Skipping {institution_name} reconnect.\n")
         _shutdown_link_setup(proc)
         return False
@@ -284,14 +296,13 @@ def prompt_reconnect(institution_name: str, profile_name: str) -> bool:
     # confirmation is either '' (bare Enter) or None (10-min timeout)
     if confirmation is None:
         print(
-            f"  Timed out waiting for confirmation — "
-            f"skipping {institution_name}.\n"
+            f"  Timed out waiting for confirmation — " f"skipping {institution_name}.\n"
         )
         _shutdown_link_setup(proc)
         return False
 
     # ── Shutdown and signal retry ─────────────────────────────────────────────
-    print(f"  Shutting down link_setup server...")
+    print("  Shutting down link_setup server...")
     _shutdown_link_setup(proc)
     print(f"  Retrying {institution_name}...\n")
     return True

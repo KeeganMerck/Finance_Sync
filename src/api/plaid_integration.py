@@ -23,13 +23,11 @@ Reference: https://plaid.com/docs/
 """
 
 import logging
-import os
-from datetime import date, datetime, timedelta
-from typing import Optional, List
+from datetime import date, datetime
 
 from ..core.config import (
-    PLAID_ENV,
     PLAID_CLIENT_ID,
+    PLAID_ENV,
     PLAID_SECRET,
     PlaidProfile,
     get_plaid_profiles,
@@ -40,13 +38,14 @@ logger = logging.getLogger(__name__)
 
 # ─── Client Initialization ────────────────────────────────────────────────────
 
+
 def _legacy_profile() -> PlaidProfile:
     return PlaidProfile(
-        name='PRIMARY',
-        prefix='PLAID',
-        env=(PLAID_ENV or '').strip().lower(),
-        client_id=PLAID_CLIENT_ID or '',
-        secret=PLAID_SECRET or '',
+        name="PRIMARY",
+        prefix="PLAID",
+        env=(PLAID_ENV or "").strip().lower(),
+        client_id=PLAID_CLIENT_ID or "",
+        secret=PLAID_SECRET or "",
     )
 
 
@@ -57,7 +56,7 @@ def get_default_plaid_profile() -> PlaidProfile:
     return _legacy_profile()
 
 
-def get_plaid_client(profile: Optional[PlaidProfile] = None):
+def get_plaid_client(profile: PlaidProfile | None = None):
     """
     Initialize and return an authenticated Plaid API client.
 
@@ -74,8 +73,10 @@ def get_plaid_client(profile: Optional[PlaidProfile] = None):
 
     # --- CHANGE THESE THREE IMPORT LINES ---
     from plaid.api import plaid_api
-    from plaid.api_client import ApiClient          # <-- Note the change to api_client
-    from plaid.configuration import Configuration   # <-- Note the change to configuration
+    from plaid.api_client import ApiClient  # <-- Note the change to api_client
+    from plaid.configuration import (
+        Configuration,  # <-- Note the change to configuration
+    )
 
     profile = profile or get_default_plaid_profile()
 
@@ -87,9 +88,9 @@ def get_plaid_client(profile: Optional[PlaidProfile] = None):
         )
 
     env_map = {
-        'sandbox':     'https://sandbox.plaid.com',
-        'development': 'https://development.plaid.com',
-        'production':  'https://production.plaid.com',
+        "sandbox": "https://sandbox.plaid.com",
+        "development": "https://development.plaid.com",
+        "production": "https://production.plaid.com",
     }
 
     if profile.env not in env_map:
@@ -104,9 +105,9 @@ def get_plaid_client(profile: Optional[PlaidProfile] = None):
     configuration = Configuration(
         host=host,
         api_key={
-            'clientId': profile.client_id,
-            'secret':   profile.secret,
-        }
+            "clientId": profile.client_id,
+            "secret": profile.secret,
+        },
     )
 
     client = plaid_api.PlaidApi(ApiClient(configuration))
@@ -116,7 +117,8 @@ def get_plaid_client(profile: Optional[PlaidProfile] = None):
 
 # ─── Access Token Management ──────────────────────────────────────────────────
 
-def get_access_tokens(profile: Optional[PlaidProfile] = None) -> dict[str, str]:
+
+def get_access_tokens(profile: PlaidProfile | None = None) -> dict[str, str]:
     """
     Return a mapping of institution name to Plaid access token.
 
@@ -137,24 +139,42 @@ def get_access_tokens(profile: Optional[PlaidProfile] = None) -> dict[str, str]:
     Raises:
         None. Logs a warning if no tokens are configured but does not fail.
     """
+    # Backwards-compatible wrapper returning simple mapping
+    return {k: v for k, v in get_access_tokens_with_source(profile).items()}
+
+
+def get_access_tokens_with_source(profile: PlaidProfile | None = None) -> dict:
+    """
+    Return a mapping of institution -> {'access_token': token, 'source': 'env'|'db'}.
+    Environment variables take precedence over DB tokens; source indicates origin.
+    """
     profile = profile or get_default_plaid_profile()
-    prefix = profile.token_prefix
-    tokens = profile.all_institutions
 
-    if not tokens:
-        logger.warning(
-            f"No access tokens found. "
-            f"Environment variables matching '{prefix}*' are required. "
-            f"Run link_setup.py to obtain tokens via Plaid Link."
-        )
+    # Collect env tokens and db tokens separately for diagnostics
+    env_tokens = profile.institutions or {}
+    db_tokens = profile.institutions_from_db or {}
 
-    logger.info(f"Loaded {len(tokens)} access token(s): {', '.join(tokens.keys()) if tokens else '(none)'}")
-    return tokens
+    # Environment tokens take precedence
+    combined = {**db_tokens, **env_tokens}
+
+    result = {}
+    for inst, token in combined.items():
+        source = "env" if inst in env_tokens else "db"
+        result[inst] = {"access_token": token, "source": source}
+
+    logger.info(
+        f"Loaded {len(result)} access token(s) for profile '{profile.name}': "
+        f"env={len(env_tokens)}, db={len(db_tokens)}"
+    )
+    return result
 
 
 # ─── Account Fetching ─────────────────────────────────────────────────────────
 
-def get_accounts(access_token: str, profile: Optional[PlaidProfile] = None) -> list[dict]:
+
+def get_accounts(
+    access_token: str, profile: PlaidProfile | None = None
+) -> list[dict]:
     """
     Fetch all accounts associated with an access token.
 
@@ -184,26 +204,33 @@ def get_accounts(access_token: str, profile: Optional[PlaidProfile] = None) -> l
 
         accounts = [
             {
-                'account_id': acct.account_id,
-                'name': acct.name,
-                'mask': acct.mask,
-                'type': str(acct.type),
-                'subtype': str(acct.subtype),
+                "account_id": acct.account_id,
+                "name": acct.name,
+                "mask": acct.mask,
+                "type": str(acct.type),
+                "subtype": str(acct.subtype),
             }
-            for acct in response['accounts']
+            for acct in response["accounts"]
         ]
 
         logger.info(f"Fetched {len(accounts)} account(s) from Plaid.")
         return accounts
 
     except Exception as e:
-        logger.exception(f"Failed to fetch accounts: {e}")
+        # Mask token in logs
+        masked = _mask_token(access_token)
+        logger.exception(
+            f"Failed to fetch accounts (profile={getattr(profile,'name',None)} token={masked}): {e}"
+        )
         raise
 
 
 # ─── Transaction Fetching ─────────────────────────────────────────────────────
 
-def refresh_transactions(access_token: str, profile: Optional[PlaidProfile] = None) -> dict:
+
+def refresh_transactions(
+    access_token: str, profile: PlaidProfile | None = None
+) -> dict:
     """Ask Plaid to refresh transaction data for an access token."""
     try:
         from plaid.model.transactions_refresh_request import TransactionsRefreshRequest
@@ -214,7 +241,10 @@ def refresh_transactions(access_token: str, profile: Optional[PlaidProfile] = No
         logger.info("Triggered Plaid transaction refresh for access token.")
         return response
     except Exception as e:
-        logger.warning(f"Plaid transaction refresh failed: {e}")
+        masked = _mask_token(access_token)
+        logger.warning(
+            f"Plaid transaction refresh failed (profile={getattr(profile,'name',None)} token={masked}): {e}"
+        )
         return {}
 
 
@@ -222,8 +252,8 @@ def get_transactions(
     access_token: str,
     start_date: date,
     end_date: date,
-    account_ids: Optional[list[str]] = None,
-    profile: Optional[PlaidProfile] = None,
+    account_ids: list[str] | None = None,
+    profile: PlaidProfile | None = None,
 ) -> list[dict]:
     """
     Fetch transactions from Plaid for a given date range.
@@ -249,7 +279,7 @@ def get_transactions(
     try:
         from plaid.model.transactions_get_request import TransactionsGetRequest
         from plaid.model.transactions_get_request_options import (
-            TransactionsGetRequestOptions
+            TransactionsGetRequestOptions,
         )
 
         client = get_plaid_client(profile)
@@ -261,9 +291,7 @@ def get_transactions(
         all_transactions = []
         offset = 0
 
-        logger.info(
-            f"Fetching transactions from {start_date} to {end_date}..."
-        )
+        logger.info(f"Fetching transactions from {start_date} to {end_date}...")
 
         while True:
             options.offset = offset
@@ -274,19 +302,16 @@ def get_transactions(
                 options=options,
             )
             response = client.transactions_get(request)
-            batch = response['transactions']
+            batch = response["transactions"]
 
             if not batch:
                 break
 
             # Convert each Plaid transaction to canonical schema
-            all_transactions.extend([
-                _normalize_plaid_transaction(t)
-                for t in batch
-            ])
+            all_transactions.extend([_normalize_plaid_transaction(t) for t in batch])
 
             offset += len(batch)
-            total = response['total_transactions']
+            total = response["total_transactions"]
 
             # Log progress every 100 transactions
             if offset % 100 == 0 or offset >= total:
@@ -299,11 +324,16 @@ def get_transactions(
         return all_transactions
 
     except Exception as e:
-        logger.exception(f"Failed to fetch transactions: {e}")
+        masked = _mask_token(access_token)
+        logger.exception(
+            f"Failed to fetch transactions (profile={getattr(profile,'name',None)} token={masked}): {e}"
+        )
         raise
 
 
-def get_investments(access_token: str, profile: Optional[PlaidProfile] = None) -> list[dict]:
+def get_investments(
+    access_token: str, profile: PlaidProfile | None = None
+) -> list[dict]:
     """
     Fetch detailed investment holdings from Plaid for investment/brokerage accounts.
 
@@ -321,55 +351,62 @@ def get_investments(access_token: str, profile: Optional[PlaidProfile] = None) -
     """
     try:
         # Use the correct Plaid SDK module name for holdings
-        from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
         from datetime import datetime
 
+        from plaid.model.investments_holdings_get_request import (
+            InvestmentsHoldingsGetRequest,
+        )
+
         client = get_plaid_client(profile)
-        
+
         # Create request without options for simplicity
         request = InvestmentsHoldingsGetRequest(access_token=access_token)
-        
+
         response = client.investments_holdings_get(request)
 
         holdings = []
-        securities = {s['security_id']: s for s in response['securities']}
-        
+        securities = {s["security_id"]: s for s in response["securities"]}
+
         # Get institution name from the response or use account info
-        institution_name = response.get('item', {}).get('institution_name', profile.name if profile else 'UNKNOWN')
-        
-        logger.info(f"Processing {len(response['accounts'])} accounts and {len(response['securities'])} securities from {institution_name}")
-        
+        institution_name = response.get("item", {}).get(
+            "institution_name", profile.name if profile else "UNKNOWN"
+        )
+
+        logger.info(
+            f"Processing {len(response['accounts'])} accounts and {len(response['securities'])} securities from {institution_name}"
+        )
+
         missing_data_count = 0
 
-        for account in response['accounts']:
-            for holding in response['holdings']:
-                if holding['account_id'] == account['account_id']:
-                    security = securities.get(holding['security_id'], {})
-                    
+        for account in response["accounts"]:
+            for holding in response["holdings"]:
+                if holding["account_id"] == account["account_id"]:
+                    security = securities.get(holding["security_id"], {})
+
                     # Try multiple price fields - including institution-specific fields for Empower
                     current_price = (
-                        holding.get('current_price') or
-                        holding.get('institution_price') or
-                        security.get('close_price') or 
-                        security.get('current_price') or 
-                        0
+                        holding.get("current_price")
+                        or holding.get("institution_price")
+                        or security.get("close_price")
+                        or security.get("current_price")
+                        or 0
                     )
-                    
-                    quantity = holding.get('quantity', 0)
-                    
+
+                    quantity = holding.get("quantity", 0)
+
                     # Calculate current_value from price * quantity, or use Plaid's value or institution value
                     current_value = (
-                        holding.get('current_value') or 
-                        holding.get('institution_value') or
-                        (quantity * current_price if current_price else 0)
+                        holding.get("current_value")
+                        or holding.get("institution_value")
+                        or (quantity * current_price if current_price else 0)
                     )
-                    
+
                     # If we have current_value and quantity but no price, calculate it
                     if current_value > 0 and quantity > 0 and current_price == 0:
                         current_price = current_value / quantity
-                    
-                    cost_basis = holding.get('cost_basis', 0)
-                    
+
+                    cost_basis = holding.get("cost_basis", 0)
+
                     # Count missing data but don't log per-holding warnings
                     if current_price == 0 or cost_basis == 0:
                         missing_data_count += 1
@@ -378,22 +415,26 @@ def get_investments(access_token: str, profile: Optional[PlaidProfile] = None) -
                     # This allows proper upserting of the same holdings over time
                     holding_id = f"{account['account_id']}_{holding['security_id']}"
 
-                    holdings.append({
-                        'holding_id': holding_id,
-                        'account_id': account['account_id'],
-                        'institution': institution_name,
-                        'security_id': holding['security_id'],
-                        'symbol': security.get('ticker_symbol', ''),
-                        'name': security.get('name', security.get('official_name', '')),
-                        'quantity': quantity or 0,
-                        'current_price': current_price or 0,
-                        'current_value': current_value or 0,
-                        'cost_basis': cost_basis or 0,
-                        'purchase_date': holding.get('purchase_date', ''),
-                        'last_updated': datetime.now().isoformat(),
-                        'snapshot_date': datetime.now().strftime('%Y-%m-%d')
-                    })
-        
+                    holdings.append(
+                        {
+                            "holding_id": holding_id,
+                            "account_id": account["account_id"],
+                            "institution": institution_name,
+                            "security_id": holding["security_id"],
+                            "symbol": security.get("ticker_symbol", ""),
+                            "name": security.get(
+                                "name", security.get("official_name", "")
+                            ),
+                            "quantity": quantity or 0,
+                            "current_price": current_price or 0,
+                            "current_value": current_value or 0,
+                            "cost_basis": cost_basis or 0,
+                            "purchase_date": holding.get("purchase_date", ""),
+                            "last_updated": datetime.now().isoformat(),
+                            "snapshot_date": datetime.now().strftime("%Y-%m-%d"),
+                        }
+                    )
+
         # Log summary of missing data instead of per-holding warnings
         if missing_data_count > 0:
             logger.warning(
@@ -405,7 +446,10 @@ def get_investments(access_token: str, profile: Optional[PlaidProfile] = None) -
         return holdings
 
     except Exception as e:
-        logger.exception(f"Failed to fetch investments: {e}")
+        masked = _mask_token(access_token)
+        logger.exception(
+            f"Failed to fetch investments (profile={getattr(profile,'name',None)} token={masked}): {e}"
+        )
         # Return empty list on error to avoid breaking the pipeline
         logger.warning("Investments fetch failed, returning empty list.")
         return []
@@ -415,7 +459,7 @@ def get_investment_transactions(
     access_token: str,
     start_date: date,
     end_date: date,
-    profile: Optional[PlaidProfile] = None
+    profile: PlaidProfile | None = None,
 ) -> list[dict]:
     """
     Fetch investment transactions from Plaid for a given date range.
@@ -434,8 +478,12 @@ def get_investment_transactions(
         List of investment transaction dicts.
     """
     try:
-        from plaid.model.investments_transactions_get_request import InvestmentsTransactionsGetRequest
-        from plaid.model.investments_transactions_get_request_options import InvestmentsTransactionsGetRequestOptions
+        from plaid.model.investments_transactions_get_request import (
+            InvestmentsTransactionsGetRequest,
+        )
+        from plaid.model.investments_transactions_get_request_options import (
+            InvestmentsTransactionsGetRequestOptions,
+        )
 
         client = get_plaid_client(profile)
         options = InvestmentsTransactionsGetRequestOptions()
@@ -458,14 +506,16 @@ def get_investment_transactions(
                 options=options,
             )
             response = client.investments_transactions_get(request)
-            batch = response.get('investment_transactions', [])
-            total_transactions = response.get('total_transactions', len(batch))
+            batch = response.get("investment_transactions", [])
+            total_transactions = response.get("total_transactions", len(batch))
 
             if not batch:
                 break
 
             # Get actual institution name from the response (same approach as get_investments)
-            institution_name = response.get('item', {}).get('institution_name', profile.name if profile else 'UNKNOWN')
+            institution_name = response.get("item", {}).get(
+                "institution_name", profile.name if profile else "UNKNOWN"
+            )
 
             logger.info(
                 f"Fetched {len(batch)} investment transactions (page offset={offset}) "
@@ -474,23 +524,29 @@ def get_investment_transactions(
 
             # Normalize transaction data
             for tx in batch:
-                all_transactions.append({
-                    'transaction_id': tx.get('investment_transaction_id'),
-                    'account_id': tx.get('account_id'),
-                    'security_id': tx.get('security_id'),
-                    'date': tx.get('date'),
-                    'datetime': tx.get('transaction_datetime'),
-                    'name': tx.get('name'),
-                    'quantity': tx.get('quantity', 0),
-                    'amount': tx.get('amount', 0),
-                    'price': tx.get('price', 0),
-                    'fees': tx.get('fees', 0),
-                    'type': str(tx.get('type')) if tx.get('type') else None,  # Convert enum to string
-                    'subtype': str(tx.get('subtype')) if tx.get('subtype') else None,  # Convert enum to string
-                    'currency': tx.get('iso_currency_code', 'USD'),
-                    'institution': institution_name,
-                    'last_updated': datetime.now().isoformat()
-                })
+                all_transactions.append(
+                    {
+                        "transaction_id": tx.get("investment_transaction_id"),
+                        "account_id": tx.get("account_id"),
+                        "security_id": tx.get("security_id"),
+                        "date": tx.get("date"),
+                        "datetime": tx.get("transaction_datetime"),
+                        "name": tx.get("name"),
+                        "quantity": tx.get("quantity", 0),
+                        "amount": tx.get("amount", 0),
+                        "price": tx.get("price", 0),
+                        "fees": tx.get("fees", 0),
+                        "type": (
+                            str(tx.get("type")) if tx.get("type") else None
+                        ),  # Convert enum to string
+                        "subtype": (
+                            str(tx.get("subtype")) if tx.get("subtype") else None
+                        ),  # Convert enum to string
+                        "currency": tx.get("iso_currency_code", "USD"),
+                        "institution": institution_name,
+                        "last_updated": datetime.now().isoformat(),
+                    }
+                )
 
             offset += len(batch)
             if offset >= total_transactions:
@@ -507,15 +563,25 @@ def get_investment_transactions(
         return all_transactions
 
     except Exception as e:
-        logger.exception(f"Failed to fetch investment transactions: {e}")
+        masked = _mask_token(access_token)
+        logger.exception(
+            f"Failed to fetch investment transactions (profile={getattr(profile,'name',None)} token={masked}): {e}"
+        )
         logger.warning("Investment transactions fetch failed, returning empty list.")
         return []
+
+
+def _mask_token(token: str) -> str:
+    if not token:
+        return "(none)"
+    t = str(token)
+    return t[:10] + "..." if len(t) > 13 else t[:6] + "..."
 
 
 def get_incremental_transactions(
     access_token: str,
     since_date: date,
-    profile: Optional[PlaidProfile] = None,
+    profile: PlaidProfile | None = None,
 ) -> list[dict]:
     """
     Fetch only new or updated transactions since a given date.
@@ -556,7 +622,8 @@ def get_incremental_transactions(
 
 # ─── Plaid-to-Canonical Conversion ────────────────────────────────────────────
 
-def _normalize_plaid_transaction(plaid_txn, institution: str = '') -> dict:
+
+def _normalize_plaid_transaction(plaid_txn, institution: str = "") -> dict:
     """
     Convert a raw Plaid transaction object to the canonical internal schema.
 
@@ -587,49 +654,57 @@ def _normalize_plaid_transaction(plaid_txn, institution: str = '') -> dict:
     """
     # Read from personal_finance_category (new Plaid API v2025+)
     # Falls back to legacy category field if needed
-    plaid_category = ''
-    plaid_category_primary = ''
+    plaid_category = ""
+    plaid_category_primary = ""
 
-    if hasattr(plaid_txn, 'personal_finance_category') and plaid_txn.personal_finance_category:
+    if (
+        hasattr(plaid_txn, "personal_finance_category")
+        and plaid_txn.personal_finance_category
+    ):
         pfc = plaid_txn.personal_finance_category
         # detailed is the most specific category
-        if hasattr(pfc, 'detailed') and pfc.detailed:
+        if hasattr(pfc, "detailed") and pfc.detailed:
             plaid_category = pfc.detailed
         # primary is the broad category
-        if hasattr(pfc, 'primary') and pfc.primary:
+        if hasattr(pfc, "primary") and pfc.primary:
             plaid_category_primary = pfc.primary
-    elif hasattr(plaid_txn, 'category') and plaid_txn.category:
+    elif hasattr(plaid_txn, "category") and plaid_txn.category:
         # Fallback to legacy category field (deprecated, but some sandboxes may use it)
-        plaid_category = plaid_txn.category[-1] if isinstance(plaid_txn.category, list) else plaid_txn.category
+        plaid_category = (
+            plaid_txn.category[-1]
+            if isinstance(plaid_txn.category, list)
+            else plaid_txn.category
+        )
 
     # Plaid uses positive amounts for debits and negative for credits —
     # the OPPOSITE of our internal convention. Flip the sign.
     amount = -(plaid_txn.amount)
 
     # Prefer merchant_name (normalized by Plaid) over name (raw description)
-    merchant = plaid_txn.merchant_name or plaid_txn.name or ''
+    merchant = plaid_txn.merchant_name or plaid_txn.name or ""
 
     return {
-        'transaction_id': plaid_txn.transaction_id,
-        'date': str(plaid_txn.date),
-        'account': plaid_txn.account_id,  # Will be resolved to human-readable name in sync.py
-        'merchant': merchant,
-        'description': plaid_txn.name or '',
-        'plaid_category': plaid_category,  # Detailed PFC category
-        'plaid_category_primary': plaid_category_primary,  # Primary PFC category
-        'user_category': None,  # Always None when leaving Plaid client
-        'amount': amount,
-        'pending': plaid_txn.pending,
-        'institution': institution,
-        'last_updated': datetime.utcnow().isoformat(),
+        "transaction_id": plaid_txn.transaction_id,
+        "date": str(plaid_txn.date),
+        "account": plaid_txn.account_id,  # Will be resolved to human-readable name in sync.py
+        "merchant": merchant,
+        "description": plaid_txn.name or "",
+        "plaid_category": plaid_category,  # Detailed PFC category
+        "plaid_category_primary": plaid_category_primary,  # Primary PFC category
+        "user_category": None,  # Always None when leaving Plaid client
+        "amount": amount,
+        "pending": plaid_txn.pending,
+        "institution": institution,
+        "last_updated": datetime.utcnow().isoformat(),
     }
 
 
 # ─── Link Token (for future Plaid Link UI) ────────────────────────────────────
 
+
 def create_link_token(
-    user_id: str = 'finance_sync_user',
-    profile: Optional[PlaidProfile] = None,
+    user_id: str = "finance_sync_user",
+    profile: PlaidProfile | None = None,
 ) -> str:
     """
     Create a Plaid Link token for the Link UI flow.
@@ -653,38 +728,38 @@ def create_link_token(
         plaid.exceptions.ApiException: On API errors (logged and re-raised).
     """
     try:
+        from plaid.model.country_code import CountryCode
         from plaid.model.link_token_create_request import LinkTokenCreateRequest
         from plaid.model.link_token_create_request_user import (
-            LinkTokenCreateRequestUser
+            LinkTokenCreateRequestUser,
         )
         from plaid.model.products import Products
-        from plaid.model.country_code import CountryCode
-        
+
         client = get_plaid_client(profile)
 
         # Build the core request with maximum data collection (reporting only, no money movement)
         request = LinkTokenCreateRequest(
             products=[
-                Products('transactions'),
-                Products('investments'),  # Enable investment data access by default
+                Products("transactions"),
+                Products("investments"),  # Enable investment data access by default
             ],
-            client_name='Finance Sync',
-            country_codes=[CountryCode('US')],
-            language='en',
+            client_name="Finance Sync",
+            country_codes=[CountryCode("US")],
+            language="en",
             user=LinkTokenCreateRequestUser(client_user_id=user_id),
-            transactions={
-                "days_requested": 730  # Forces the 24-month historical pull
-            },
+            transactions={"days_requested": 730},  # Forces the 24-month historical pull
             optional_products=[
-                Products('liabilities'),        # Loan/credit data (interest rates, payments)
-                Products('identity'),           # User identity information
-                Products('signal'),             # Transaction scores/risk analysis
-            ]
+                Products("liabilities"),  # Loan/credit data (interest rates, payments)
+                Products("identity"),  # User identity information
+                Products("signal"),  # Transaction scores/risk analysis
+            ],
         )
 
         response = client.link_token_create(request)
-        link_token = response['link_token']
-        logger.info(f"Created Plaid Link token with 730 days history and optional products for user: {user_id}")
+        link_token = response["link_token"]
+        logger.info(
+            f"Created Plaid Link token with 730 days history and optional products for user: {user_id}"
+        )
         return link_token
 
     except Exception as e:
@@ -694,9 +769,10 @@ def create_link_token(
 
 # ─── Public Token Exchange (for Plaid Link UI) ─────────────────────────────────
 
+
 def item_public_token_exchange(
     public_token: str,
-    profile: Optional[PlaidProfile] = None,
+    profile: PlaidProfile | None = None,
 ) -> str:
     """
     Exchange a public token (returned by Plaid Link UI) for an access token.
@@ -717,13 +793,13 @@ def item_public_token_exchange(
     """
     try:
         from plaid.model.item_public_token_exchange_request import (
-            ItemPublicTokenExchangeRequest
+            ItemPublicTokenExchangeRequest,
         )
 
         client = get_plaid_client(profile)
         request = ItemPublicTokenExchangeRequest(public_token=public_token)
         response = client.item_public_token_exchange(request)
-        access_token = response['access_token']
+        access_token = response["access_token"]
 
         logger.info("Successfully exchanged public token for access token.")
         return access_token

@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 from .core.config import DATA_DIR
 
@@ -15,22 +15,22 @@ logger = logging.getLogger(__name__)
 _LOCK_PATH = Path(DATA_DIR) / ".finance-sync.lock"
 
 # Windows compatibility for file locking
-if sys.platform == 'win32':
+if sys.platform == "win32":
     # Simple file-based lock for Windows
     class WindowsLock:
         def __init__(self, lock_path):
             self.lock_path = lock_path
             self.file = None
-            
+
         def acquire(self):
             try:
                 # Try to create the file exclusively
-                self.file = open(self.lock_path, 'x')
+                self.file = open(self.lock_path, "x")
             except FileExistsError:
                 raise BlockingIOError("Lock file already exists")
             except Exception as e:
                 raise BlockingIOError(f"Windows lock error: {e}")
-                
+
         def release(self):
             if self.file:
                 self.file.close()
@@ -39,6 +39,7 @@ if sys.platform == 'win32':
                 self.lock_path.unlink(missing_ok=True)
             except:
                 pass
+
 else:
     import fcntl
 
@@ -51,8 +52,8 @@ class SyncAlreadyRunning(RuntimeError):
 def _sync_lock() -> Iterator[None]:
     """Acquire a non-blocking process-wide lock shared with scheduled jobs."""
     _LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    
-    if sys.platform == 'win32':
+
+    if sys.platform == "win32":
         # Windows locking
         lock = WindowsLock(_LOCK_PATH)
         try:

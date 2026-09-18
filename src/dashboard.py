@@ -26,7 +26,6 @@ To push to Google Sheets instead of opening the dashboard:
 import argparse
 import csv
 import io
-import json
 import logging
 import os
 import sqlite3
@@ -39,9 +38,28 @@ from typing import Any
 from flask import Flask, Response, jsonify, render_template, request
 
 # ── Config ────────────────────────────────────────────────────────────────────
-from .core.config import DATABASE_PATH, DASHBOARD_PORT, PLAID_ENV, PLAID_CLIENT_ID, RULES_CSV_PATH
-from .modules.database import init_db, upsert_plaid_token, get_plaid_tokens, delete_plaid_token
-from .core.config import ROLLING_SYNC_DAYS
+from .core.config import (
+    DASHBOARD_PORT,
+    DATABASE_PATH,
+    PLAID_CLIENT_ID,
+    PLAID_ENV,
+    RULES_CSV_PATH,
+)
+from .modules import categorizer as _categorizer
+from .modules.database import (
+    delete_plaid_token,
+    eastern_now_iso,
+    eastern_today,
+    get_investment_holdings,
+    get_net_worth_history,
+    get_net_worth_history_status,
+    get_net_worth_history_summary,
+    get_plaid_tokens,
+    init_db,
+    normalize_snapshot_date,
+    recalculate_net_worth_history,
+    upsert_plaid_token,
+)
 from .sync_manager import get_sync_status, start_background_sync
 
 _HERE = Path(__file__).resolve().parent
@@ -63,6 +81,7 @@ app = Flask(
 
 # ── Database helpers ──────────────────────────────────────────────────────────
 
+
 def _db_exists() -> bool:
     return DATABASE_PATH.exists()
 
@@ -72,7 +91,7 @@ def _db(write=False):
     """
     Yield a dict-row SQLite connection (read-only URI when DB exists).
     Raises RuntimeError if the database file does not exist yet.
-    
+
     Args:
         write: If True, opens in read-write mode instead of read-only.
     """
@@ -117,6 +136,7 @@ def _scalar(query: str, params: tuple = (), default=None, write: bool = False):
 # ── Amount helpers ────────────────────────────────────────────────────────────
 # Database convention: positive amount = money IN (income), negative = money OUT (expense).
 
+
 def _net_worth_from_accounts(accounts: list[dict]) -> float:
     """
     Compute net worth from a list of account-balance dicts.
@@ -128,7 +148,7 @@ def _net_worth_from_accounts(accounts: list[dict]) -> float:
     for a in accounts:
         t = (a.get("account_type") or "").lower()
         bal = a.get("current_balance") or 0.0
-        if t in ("depository", "investment"):
+        if t in ("depository", "investment", "brokerage"):
             nw += bal
         elif t in ("credit", "loan"):
             nw -= bal
@@ -136,6 +156,7 @@ def _net_worth_from_accounts(accounts: list[dict]) -> float:
 
 
 # ── Data queries ──────────────────────────────────────────────────────────────
+
 
 def _date_range_bounds() -> tuple[str, str]:
     """Return (earliest_month, latest_month) present in the transactions table."""
@@ -145,13 +166,13 @@ def _date_range_bounds() -> tuple[str, str]:
     )
     latest = _scalar(
         "SELECT strftime('%Y-%m', MAX(date)) FROM transactions WHERE excluded=0 AND pending=0",
-        default=date.today().strftime("%Y-%m"),
+        default=f"{eastern_today()[:7]}",
     )
     return earliest, latest
 
 
 def _current_month() -> str:
-    return date.today().strftime("%Y-%m")
+    return eastern_today()[:7]
 
 
 def _rolling_month_range() -> tuple[str, str]:
@@ -162,14 +183,19 @@ def _rolling_month_range() -> tuple[str, str]:
     Returns:
         (start_date, end_date) in YYYY-MM-DD format
     """
-    today = date.today()
+    today = date.fromisoformat(eastern_today())
     # Use 30 days as approximate rolling month
     start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
     return start_date, end_date
 
 
-def _spend_pivot(start_month: str, end_month: str, account_filters: list[str] = None, institution_filters: list[str] = None) -> dict:
+def _spend_pivot(
+    start_month: str,
+    end_month: str,
+    account_filters: list[str] | None = None,
+    institution_filters: list[str] | None = None,
+) -> dict:
     """
     Build a pivot of monthly spend by category (including manual transactions).
 
@@ -194,7 +220,7 @@ def _spend_pivot(start_month: str, end_month: str, account_filters: list[str] = 
 
     # Account filters (uses account column for both tables)
     if account_filters and len(account_filters) > 0:
-        account_placeholders = ','.join(['?' for _ in account_filters])
+        account_placeholders = ",".join(["?" for _ in account_filters])
         conditions_transactions.append(f"account IN ({account_placeholders})")
         conditions_manual.append(f"account IN ({account_placeholders})")
         params_transactions.extend(account_filters)
@@ -202,13 +228,15 @@ def _spend_pivot(start_month: str, end_month: str, account_filters: list[str] = 
 
     # Institution filters (uses institution column for transactions table only)
     if institution_filters and len(institution_filters) > 0:
-        institution_placeholders = ','.join(['?' for _ in institution_filters])
+        institution_placeholders = ",".join(["?" for _ in institution_filters])
         conditions_transactions.append(f"institution IN ({institution_placeholders})")
         params_transactions.extend(institution_filters)
 
     # Build WHERE clauses
     if conditions_transactions:
-        where_clause_transactions = "AND (" + " AND ".join(conditions_transactions) + ")"
+        where_clause_transactions = (
+            "AND (" + " AND ".join(conditions_transactions) + ")"
+        )
     else:
         where_clause_transactions = ""
 
@@ -216,7 +244,7 @@ def _spend_pivot(start_month: str, end_month: str, account_filters: list[str] = 
         where_clause_manual = "AND (" + " AND ".join(conditions_manual) + ")"
     else:
         where_clause_manual = ""
-    
+
     raw = _rows(
         f"""
         WITH combined_transactions AS (
@@ -270,7 +298,11 @@ def _spend_pivot(start_month: str, end_month: str, account_filters: list[str] = 
     # Build rows
     rows = []
     for cat, monthly in pivot.items():
-        avg_vals = [monthly.get(m, 0.0) for m in complete] if complete else list(monthly.values())
+        avg_vals = (
+            [monthly.get(m, 0.0) for m in complete]
+            if complete
+            else list(monthly.values())
+        )
         average = sum(avg_vals) / len(avg_vals) if avg_vals else 0.0
         rows.append({"category": cat, "monthly": monthly, "average": average})
 
@@ -282,7 +314,11 @@ def _spend_pivot(start_month: str, end_month: str, account_filters: list[str] = 
     for m in months:
         net_monthly[m] = sum(cat_row["monthly"].get(m, 0.0) for cat_row in rows)
 
-    net_avg_vals = [net_monthly.get(m, 0.0) for m in complete] if complete else list(net_monthly.values())
+    net_avg_vals = (
+        [net_monthly.get(m, 0.0) for m in complete]
+        if complete
+        else list(net_monthly.values())
+    )
     net_average = sum(net_avg_vals) / len(net_avg_vals) if net_avg_vals else 0.0
     net_row = {"monthly": net_monthly, "average": net_average}
 
@@ -300,11 +336,11 @@ def _get_transactions(
 ) -> list[dict]:
     """
     Get transactions for the transactions view (both Plaid and manual).
-    
+
     Args:
         start_date: Optional start date in YYYY-MM-DD format.
         end_date: Optional end date in YYYY-MM-DD format.
-    
+
     Returns:
         List of transaction dicts with Date, Account, Description, Category, Amount.
     """
@@ -323,17 +359,17 @@ def _get_transactions(
         WHERE excluded = 0 AND pending = 0
     """
     params = []
-    
+
     if start_date:
         query += " AND date >= ?"
         params.append(start_date)
-    
+
     if end_date:
         query += " AND date <= ?"
         params.append(end_date)
-    
+
     plaid_txns = _rows(query, tuple(params))
-    
+
     # Get manual transactions
     manual_query = """
         SELECT 
@@ -348,31 +384,31 @@ def _get_transactions(
         FROM manual_transactions
     """
     manual_params = []
-    
+
     if start_date:
         manual_query += " WHERE date >= ?"
         manual_params.append(start_date)
-    
+
     if end_date:
         if manual_params:
             manual_query += " AND date <= ?"
         else:
             manual_query += " WHERE date <= ?"
         manual_params.append(end_date)
-    
+
     manual_txns = _rows(manual_query, tuple(manual_params))
-    
+
     # Combine and sort by date DESC
     all_txns = plaid_txns + manual_txns
     all_txns.sort(key=lambda x: x["Date"], reverse=True)
-    
+
     return all_txns
 
 
 def _get_manual_snapshots() -> list[dict]:
     """
     Get all manual account snapshots.
-    
+
     Returns:
         List of all manual snapshot dicts ordered by snapshot_date DESC, account_name.
     """
@@ -387,24 +423,26 @@ def _get_manual_snapshots() -> list[dict]:
 def _add_manual_snapshot(snapshot: dict) -> bool:
     """
     Add or update a manual account snapshot with validation.
-    
+
     Args:
-        snapshot: Dict with keys: snapshot_date, account_id, account_name, 
+        snapshot: Dict with keys: snapshot_date, account_id, account_name,
                   institution, account_type, account_subtype, current_balance,
                   available_balance, credit_limit, currency
-    
+
     Returns:
         True if successful, False otherwise.
     """
     from .modules.database import validate_manual_account_snapshot
-    
+
     # Validate snapshot
     is_valid, error_message = validate_manual_account_snapshot(snapshot)
     if not is_valid:
         logger.error(f"Invalid manual snapshot: {error_message}")
         return False
-    
+
     try:
+        snapshot = dict(snapshot)
+        snapshot["snapshot_date"] = normalize_snapshot_date(snapshot["snapshot_date"])
         with _db(write=True) as conn:
             conn.execute(
                 """
@@ -437,12 +475,29 @@ def _add_manual_snapshot(snapshot: dict) -> bool:
                 ),
             )
             conn.commit()
-        
-        # Note: Net worth history is calculated on-the-fly in _networth_history()
-        # to always include the latest manual snapshots
-        
+
+            # Ensure app_state table exists then update timestamp to notify clients
+            try:
+                from .modules.database import init_app_state
+
+                init_app_state()
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to ensure app_state exists")
+
+            try:
+                conn.execute(
+                    "INSERT INTO app_state(key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    ("last_manual_snapshot_update", eastern_now_iso()),
+                )
+                conn.commit()
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to write app_state last_manual_snapshot_update")
+
+            recalculate_net_worth_history(snapshot["snapshot_date"])
+
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Failed to add manual snapshot: {e}")
         return False
 
@@ -450,27 +505,27 @@ def _add_manual_snapshot(snapshot: dict) -> bool:
 def _delete_manual_snapshot(snapshot_date: str, account_id: str) -> bool:
     """
     Delete a manual account snapshot.
-    
+
     Args:
         snapshot_date: Date string in YYYY-MM-DD format.
         account_id: Account ID.
-    
+
     Returns:
         True if successful, False otherwise.
     """
     try:
+        snapshot_date = normalize_snapshot_date(snapshot_date)
         with _db(write=True) as conn:
             conn.execute(
                 "DELETE FROM manual_account_snapshots WHERE snapshot_date = ? AND account_id = ?",
                 (snapshot_date, account_id),
             )
             conn.commit()
-        
-        # Note: Net worth history is calculated on-the-fly in _networth_history()
-        # to always include the latest manual snapshots
-        
+
+        recalculate_net_worth_history(snapshot_date)
+
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Failed to delete manual snapshot: {e}")
         return False
 
@@ -483,7 +538,12 @@ def _current_accounts() -> list[dict]:
     return _rows(
         """
         WITH latest_date AS (
-            SELECT MAX(snapshot_date) as max_date FROM account_snapshots
+            SELECT MAX(snapshot_date) as max_date FROM (
+                SELECT snapshot_date FROM account_snapshots
+                UNION
+                SELECT snapshot_date FROM manual_account_snapshots
+            ) AS all_dates
+            WHERE snapshot_date <= ?
         ),
         manual_forward_fill AS (
             -- Get the latest manual snapshot for each account as of the latest date
@@ -517,6 +577,7 @@ def _current_accounts() -> list[dict]:
                    account_subtype, current_balance, available_balance,
                    credit_limit, snapshot_date, 'plaid' as source
             FROM account_snapshots
+            WHERE snapshot_date <= (SELECT max_date FROM latest_date)
             UNION ALL
             -- Add forward-filled manual snapshots
             SELECT account_id, account_name, institution, account_type,
@@ -541,6 +602,7 @@ def _current_accounts() -> list[dict]:
         WHERE rn = 1
         ORDER BY account_type, institution, account_name
         """
+        , (eastern_today(),)
     )
 
 
@@ -553,7 +615,11 @@ def _networth_history() -> list[dict]:
     rows = _rows(
         """
         WITH all_dates AS (
-            SELECT DISTINCT snapshot_date FROM account_snapshots
+            SELECT DISTINCT snapshot_date FROM (
+                SELECT snapshot_date FROM account_snapshots
+                UNION
+                SELECT snapshot_date FROM manual_account_snapshots
+            ) AS all_snapshot_dates
         ),
         manual_by_date AS (
             -- For each date, get the latest manual snapshot for each account on or before that date
@@ -626,14 +692,16 @@ def _networth_history() -> list[dict]:
 
     result = []
     for r in rows:
-        result.append({"snapshot_date": r["snapshot_date"], "net_worth": round(r["net_worth"], 2)})
+        result.append(
+            {"snapshot_date": r["snapshot_date"], "net_worth": round(r["net_worth"], 2)}
+        )
     return result
 
 
 def _summary_cards() -> dict:
     start_date, end_date = _rolling_month_range()
     cur = _current_month()
-    
+
     # Rolling month spend / income (positive=income, negative=expense) - including manual transactions
     month_rows = _rows(
         """
@@ -654,7 +722,7 @@ def _summary_cards() -> dict:
         """,
         (start_date, end_date, start_date, end_date),
     )
-    
+
     # Aggregate the results
     spend = sum(r.get("spend") or 0.0 for r in month_rows)
     income = sum(r.get("income") or 0.0 for r in month_rows)
@@ -682,13 +750,13 @@ def _summary_cards() -> dict:
         """,
         (cur, cur),
     )
-    
+
     # Aggregate by month
     monthly_totals = {}
     for r in avg_rows:
         month = r["month"]
         monthly_totals[month] = monthly_totals.get(month, 0) + r["total"]
-    
+
     avg_net = (
         sum(monthly_totals.values()) / len(monthly_totals) if monthly_totals else 0.0
     )
@@ -714,12 +782,12 @@ def _summary_cards() -> dict:
 def _investment_data() -> dict:
     """Return investment accounts, current holdings, history, and activity."""
     accounts = [
-        a for a in _current_accounts()
+        a
+        for a in _current_accounts()
         if (a.get("account_type") or "").lower() == "investment"
     ]
     account_names = {
-        a["account_id"]: a.get("account_name") or a["account_id"]
-        for a in accounts
+        a["account_id"]: a.get("account_name") or a["account_id"] for a in accounts
     }
 
     holdings = _rows(
@@ -751,9 +819,7 @@ def _investment_data() -> dict:
         GROUP BY account_id, security_id
         """
     )
-    imported_by_key = {
-        (r["account_id"], r["security_id"]): r for r in imported_basis
-    }
+    imported_by_key = {(r["account_id"], r["security_id"]): r for r in imported_basis}
     basis_entries = _rows(
         """
         SELECT basis_id, account_id, security_id, symbol, name, quantity,
@@ -778,7 +844,9 @@ def _investment_data() -> dict:
         price = holding.get("current_price") or (
             current_value / quantity if quantity else 0
         )
-        imported = imported_by_key.get((holding["account_id"], holding["security_id"]), {})
+        imported = imported_by_key.get(
+            (holding["account_id"], holding["security_id"]), {}
+        )
         imported_qty = min(quantity, max(imported.get("quantity") or 0, 0))
         imported_cost = max(imported.get("total_cost") or 0, 0)
         key = (holding["account_id"], holding.get("security_id"), holding["symbol"])
@@ -786,7 +854,9 @@ def _investment_data() -> dict:
         # A security_id can be absent in some imported records, so symbol is
         # also accepted for manual entries where it is the stable identifier.
         if not entries:
-            entries = manual_by_key.get((holding["account_id"], None, holding["symbol"]), [])
+            entries = manual_by_key.get(
+                (holding["account_id"], None, holding["symbol"]), []
+            )
         overrides = [e for e in entries if e["entry_mode"] == "override"]
         supplements = [e for e in entries if e["entry_mode"] != "override"]
 
@@ -812,21 +882,26 @@ def _investment_data() -> dict:
         known_value = price * known_qty
         unknown_value = max(current_value - known_value, 0) if quantity else 0
         known_gain_loss = known_value - known_basis
-        holding.update({
-            "imported_quantity": round(imported_qty, 6),
-            "manual_quantity": round(
-                max(known_qty - imported_qty, 0) if not overrides else known_qty, 6
-            ),
-            "known_quantity": round(known_qty, 6),
-            "unknown_quantity": round(unknown_qty, 6),
-            "known_value": round(known_value, 2),
-            "unknown_value": round(unknown_value, 2),
-            "known_cost_basis": round(known_basis, 2),
-            "known_gain_loss": round(known_gain_loss, 2),
-            "known_gain_loss_percent": round(known_gain_loss / known_basis * 100, 2)
-            if known_basis else None,
-            "basis_source": basis_source if known_qty else "unknown",
-        })
+        holding.update(
+            {
+                "imported_quantity": round(imported_qty, 6),
+                "manual_quantity": round(
+                    max(known_qty - imported_qty, 0) if not overrides else known_qty, 6
+                ),
+                "known_quantity": round(known_qty, 6),
+                "unknown_quantity": round(unknown_qty, 6),
+                "known_value": round(known_value, 2),
+                "unknown_value": round(unknown_value, 2),
+                "known_cost_basis": round(known_basis, 2),
+                "known_gain_loss": round(known_gain_loss, 2),
+                "known_gain_loss_percent": (
+                    round(known_gain_loss / known_basis * 100, 2)
+                    if known_basis
+                    else None
+                ),
+                "basis_source": basis_source if known_qty else "unknown",
+            }
+        )
 
     history = _rows(
         """
@@ -859,9 +934,7 @@ def _investment_data() -> dict:
         """
     )
     for txn in investment_transactions:
-        txn["account_name"] = account_names.get(
-            txn["account_id"], txn["account_id"]
-        )
+        txn["account_name"] = account_names.get(txn["account_id"], txn["account_id"])
 
     current_value = round(sum(h.get("current_value") or 0 for h in holdings), 2)
     known_value = round(sum(h.get("known_value") or 0 for h in holdings), 2)
@@ -878,8 +951,9 @@ def _investment_data() -> dict:
             "current_value": current_value,
             "cost_basis": cost_basis,
             "gain_loss": gain_loss,
-            "gain_loss_percent": round(gain_loss / cost_basis * 100, 2)
-            if cost_basis else None,
+            "gain_loss_percent": (
+                round(gain_loss / cost_basis * 100, 2) if cost_basis else None
+            ),
             "holding_count": len(holdings),
             "account_count": len(accounts),
             "transaction_count": len(investment_transactions),
@@ -887,8 +961,9 @@ def _investment_data() -> dict:
             "as_of": max(snapshots) if snapshots else None,
             "known_value": known_value,
             "unknown_value": unknown_value,
-            "basis_coverage_percent": round(known_value / current_value * 100, 2)
-            if current_value else 0,
+            "basis_coverage_percent": (
+                round(known_value / current_value * 100, 2) if current_value else 0
+            ),
         },
         "accounts": accounts,
         "holdings": holdings,
@@ -904,7 +979,7 @@ def _projections(lookback_months: int = 12) -> dict:
     """
     cur = _current_month()
     rows = _rows(
-        f"""
+        """
         SELECT
             strftime('%Y-%m', date)                                            AS month,
             COALESCE(user_category, plaid_category_primary, plaid_category,
@@ -978,12 +1053,14 @@ def _projections(lookback_months: int = 12) -> dict:
 
 # ── Favicon (suppress 404 in browser console) ─────────────────────────────────
 
+
 @app.route("/favicon.ico")
 def favicon():
     return Response(status=204)
 
 
 # ── Page routes ───────────────────────────────────────────────────────────────
+
 
 @app.route("/")
 def index():
@@ -992,17 +1069,17 @@ def index():
 
 @app.route("/spend")
 def spend():
-    earliest, latest = _date_range_bounds()
-    
+    _earliest, _latest = _date_range_bounds()
+
     # Set default start date to June 2025
-    from datetime import datetime
+
     default_start = "2025-06"
-    
+
     # Use current date as default end date
-    current_year = datetime.now().year
-    current_month = datetime.now().month
+    current_year = datetime.now().year  # noqa: DTZ005
+    current_month = datetime.now().month  # noqa: DTZ005
     default_end = f"{current_year}-{current_month:02d}"
-    
+
     return render_template("spend.html", earliest=default_start, latest=default_end)
 
 
@@ -1020,7 +1097,9 @@ def projections():
 @app.route("/link-accounts")
 def link_accounts():
     """Plaid Link setup page integrated into dashboard."""
-    return render_template("link_accounts.html", PLAID_ENV=PLAID_ENV, PLAID_CLIENT_ID=PLAID_CLIENT_ID)
+    return render_template(
+        "link_accounts.html", PLAID_ENV=PLAID_ENV, PLAID_CLIENT_ID=PLAID_CLIENT_ID
+    )
 
 
 @app.route("/rules")
@@ -1034,6 +1113,11 @@ def transactions():
     return render_template("transactions.html")
 
 
+@app.route('/admin/tokens')
+def admin_tokens_page():
+    """Admin page to view and manage Plaid tokens (masked)."""
+    return render_template('admin_tokens.html')
+
 @app.route("/manual")
 def manual():
     return render_template("manual.html")
@@ -1045,6 +1129,7 @@ def networth():
 
 
 # ── API routes ────────────────────────────────────────────────────────────────
+
 
 @app.route("/api/summary")
 def api_summary():
@@ -1081,11 +1166,16 @@ def api_spend_monthly():
     # Handle multiple institution filters from query parameters
     institution_filters = request.args.getlist("institution")
     if institution_filters:
-        institution_filters = [i for i in institution_filters if i]  # Filter out empty strings
+        institution_filters = [
+            i for i in institution_filters if i
+        ]  # Filter out empty strings
 
-    pivot = _spend_pivot(start, end,
-                        account_filters if account_filters else None,
-                        institution_filters if institution_filters else None)
+    pivot = _spend_pivot(
+        start,
+        end,
+        account_filters if account_filters else None,
+        institution_filters if institution_filters else None,
+    )
     return jsonify(pivot)
 
 
@@ -1108,7 +1198,7 @@ def api_accounts():
         result = [a["account_name"] for a in accounts if a["account_name"]]
         logger.info(f"Returning {len(result)} accounts: {result}")
         return jsonify(result)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Error getting accounts: {e}")
         return jsonify([])
 
@@ -1128,7 +1218,7 @@ def api_institutions():
         result = [i["institution_name"] for i in institutions if i["institution_name"]]
         logger.info(f"Returning {len(result)} institutions: {result}")
         return jsonify(result)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Error getting institutions: {e}")
         return jsonify([])
 
@@ -1141,7 +1231,7 @@ def api_networth_current():
         assets = sum(
             a["current_balance"] or 0
             for a in accounts
-            if (a.get("account_type") or "").lower() in ("depository", "investment")
+            if (a.get("account_type") or "").lower() in ("depository", "investment", "brokerage")
         )
         liabilities = sum(
             a["current_balance"] or 0
@@ -1156,7 +1246,7 @@ def api_networth_current():
                 "accounts": accounts,
             }
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Error in api_networth_current: {e}")
         return jsonify({"error": str(e)}), 500
 
@@ -1165,96 +1255,54 @@ def api_networth_current():
 def api_networth_history():
     """Get daily net worth history with forward-filled manual account values."""
     try:
-        return jsonify(_networth_history())
-    except Exception as e:
+        return jsonify(get_net_worth_history())
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Error in api_networth_history: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/networth/history/status")
+def api_networth_history_status():
+    """Return whether all eligible source dates exist in the history cache."""
+    try:
+        return jsonify(get_net_worth_history_status())
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error in api_networth_history_status: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/networth/history/summary")
+def api_networth_history_summary():
+    """Return evenly distributed net-worth period averages for compact charts."""
+    try:
+        points = request.args.get("points", 12, type=int)
+        if points < 1 or points > 52:
+            return jsonify({"error": "points must be between 1 and 52"}), 400
+        return jsonify(get_net_worth_history_summary(points=points))
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error in api_networth_history_summary: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/networth/history/recalculate", methods=["POST"])
+def api_recalculate_networth_history():
+    """Rebuild all materialized net-worth history from raw snapshot tables."""
+    try:
+        from .modules.database import recalculate_net_worth_history
+
+        result = recalculate_net_worth_history()
+        result["success"] = True
+        result["completed_at"] = eastern_now_iso()
+        return jsonify(result)
+    except Exception as e:
+        logger.exception("Error rebuilding net worth history")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/networth/daily")
 def api_networth_daily():
     """Get daily net worth history with forward-filled manual account values."""
-    rows = _rows(
-        """
-        WITH all_dates AS (
-            SELECT DISTINCT snapshot_date FROM account_snapshots
-        ),
-        manual_by_date AS (
-            -- For each date, get the latest manual snapshot for each account on or before that date
-            SELECT 
-                a.snapshot_date,
-                m.account_id,
-                m.account_type,
-                m.current_balance,
-                ROW_NUMBER() OVER (
-                    PARTITION BY a.snapshot_date, m.account_id
-                    ORDER BY m.snapshot_date DESC
-                ) AS rn
-            FROM all_dates a
-            LEFT JOIN manual_account_snapshots m ON m.snapshot_date <= a.snapshot_date
-        ),
-        latest_manual_by_date AS (
-            SELECT snapshot_date, account_id, account_type, current_balance
-            FROM manual_by_date
-            WHERE rn = 1
-        ),
-        combined_balances AS (
-            -- Start with Plaid snapshots
-            SELECT 
-                snapshot_date,
-                account_id,
-                account_type,
-                current_balance,
-                'plaid' as source
-            FROM account_snapshots
-            
-            UNION ALL
-            
-            -- Add forward-filled manual snapshots (replace Plaid for same account_id)
-            SELECT snapshot_date, account_id, account_type, current_balance, 'manual' as source
-            FROM latest_manual_by_date
-            WHERE current_balance IS NOT NULL
-        ),
-        prioritized AS (
-            -- Prioritize manual over plaid for same account_id and date
-            SELECT
-                snapshot_date,
-                account_type,
-                current_balance,
-                ROW_NUMBER() OVER (
-                    PARTITION BY snapshot_date, account_id
-                    ORDER BY 
-                        CASE WHEN source = 'manual' THEN 1 ELSE 0 END DESC
-                ) AS rn
-            FROM combined_balances
-        ),
-        daily_net_worth AS (
-            SELECT
-                snapshot_date,
-                SUM(CASE
-                    WHEN account_type IN ('depository', 'investment')
-                    THEN COALESCE(current_balance, 0)
-                    WHEN account_type IN ('credit', 'loan')
-                    THEN -COALESCE(current_balance, 0)
-                    ELSE 0
-                END) as net_worth
-            FROM prioritized
-            WHERE rn = 1
-            GROUP BY snapshot_date
-        )
-        SELECT snapshot_date, net_worth
-        FROM daily_net_worth
-        ORDER BY snapshot_date DESC
-        """
-    )
-    
-    result = []
-    for r in rows:
-        result.append({
-            "snapshot_date": r["snapshot_date"],
-            "net_worth": round(r["net_worth"], 2)
-        })
-    return jsonify(result)
+    return jsonify(list(reversed(get_net_worth_history())))
 
 
 @app.route("/api/investments/history")
@@ -1262,96 +1310,101 @@ def api_investments_history():
     """Get historical investment holdings for performance analysis."""
     try:
         from .modules.database import get_investment_holdings_history
-        from .core.config import ENABLE_DATABASE
-        
-        days = request.args.get('days', 90, type=int)
-        
+
+        days = request.args.get("days", 90, type=int)
+
         logger.info(f"Fetching investment history for last {days} days")
-        
+
         history = get_investment_holdings_history(days=days)
         logger.info(f"Retrieved {len(history)} historical investment records")
-        
+
         # Group by snapshot date for time series
         by_date = {}
         for h in history:
-            date = h.get('snapshot_date')
+            date = h.get("snapshot_date")
             if date not in by_date:
                 by_date[date] = {
-                    'total_value': 0,
-                    'total_cost': 0,
-                    'total_gain': 0,
-                    'total_gain_percent': 0,
-                    'count': 0,
-                    'institutions': set()
+                    "total_value": 0,
+                    "total_cost": 0,
+                    "total_gain": 0,
+                    "total_gain_percent": 0,
+                    "count": 0,
+                    "institutions": set(),
                 }
-            
-            by_date[date]['total_value'] += h.get('current_value') or 0
-            by_date[date]['total_cost'] += h.get('cost_basis') or 0
-            by_date[date]['count'] += 1
-            by_date[date]['institutions'].add(h.get('institution') or 'Unknown')
-        
+
+            by_date[date]["total_value"] += h.get("current_value") or 0
+            by_date[date]["total_cost"] += h.get("cost_basis") or 0
+            by_date[date]["count"] += 1
+            by_date[date]["institutions"].add(h.get("institution") or "Unknown")
+
         # Calculate daily metrics
-        for date in by_date:
-            by_date[date]['total_gain'] = by_date[date]['total_value'] - by_date[date]['total_cost']
-            by_date[date]['total_gain_percent'] = (
-                (by_date[date]['total_gain'] / by_date[date]['total_cost'] * 100) 
-                if by_date[date]['total_cost'] > 0 else 0
+        for date, metrics in by_date.items():
+            metrics["total_gain"] = metrics["total_value"] - metrics["total_cost"]
+            metrics["total_gain_percent"] = (
+                (metrics["total_gain"] / metrics["total_cost"] * 100)
+                if metrics["total_cost"] > 0
+                else 0
             )
-            by_date[date]['institutions'] = list(by_date[date]['institutions'])
-        
+            metrics["institutions"] = list(metrics["institutions"])
+
         # Convert to sorted list
         time_series = sorted(
-            [{'date': date, **metrics} for date, metrics in by_date.items()],
-            key=lambda x: x['date']
+            [{"date": date, **metrics} for date, metrics in by_date.items()],
+            key=lambda x: x["date"],
         )
-        
-        return jsonify({
-            'history': history,
-            'time_series': time_series,
-            'days': days,
-            'total_records': len(history)
-        })
-    except Exception as e:
+
+        return jsonify(
+            {
+                "history": history,
+                "time_series": time_series,
+                "days": days,
+                "total_records": len(history),
+            }
+        )
+    except Exception:
         logger.exception("Failed to fetch investment history")
-        return jsonify({
-            'history': [],
-            'time_series': [],
-            'days': days,
-            'total_records': 0
-        })
+        return jsonify(
+            {"history": [], "time_series": [], "days": days, "total_records": 0}
+        )
 
 
 @app.route("/api/investments/transactions")
 def api_investment_transactions():
     """Get investment transactions for analysis and cost basis verification."""
     try:
-        from .modules.database import get_investment_transactions
         from .core.config import ENABLE_DATABASE
+        from .modules.database import get_investment_transactions
 
-        security_id = request.args.get('security_id')
-        symbol = request.args.get('symbol')
-        
-        logger.info(f"Fetching investment transactions - security_id: {security_id}, symbol: {symbol}")
+        security_id = request.args.get("security_id")
+        symbol = request.args.get("symbol")
+
+        logger.info(
+            f"Fetching investment transactions - security_id: {security_id}, symbol: {symbol}"
+        )
 
         if not ENABLE_DATABASE:
-            return jsonify({
-                'transactions': [],
-                'total_count': 0,
-                'filtered_by': None
-            })
+            return jsonify({"transactions": [], "total_count": 0, "filtered_by": None})
 
         transactions = get_investment_transactions()
-        
+
         # Filter by security_id or symbol if provided
         if security_id:
-            transactions = [t for t in transactions if t.get('security_id') == security_id]
+            transactions = [
+                t for t in transactions if t.get("security_id") == security_id
+            ]
             filtered_by = f"security_id: {security_id}"
         elif symbol:
             # Need to get security_id from holdings first
             holdings = get_investment_holdings()
-            matching_security_ids = [h['security_id'] for h in holdings if h.get('symbol') == symbol]
+            matching_security_ids = [
+                h["security_id"] for h in holdings if h.get("symbol") == symbol
+            ]
             if matching_security_ids:
-                transactions = [t for t in transactions if t.get('security_id') in matching_security_ids]
+                transactions = [
+                    t
+                    for t in transactions
+                    if t.get("security_id") in matching_security_ids
+                ]
                 filtered_by = f"symbol: {symbol}"
             else:
                 transactions = []
@@ -1361,40 +1414,52 @@ def api_investment_transactions():
 
         # Calculate summary statistics
         summary = {
-            'total_transactions': len(transactions),
-            'total_amount_invested': sum(t.get('amount', 0) for t in transactions if t.get('type') == 'buy'),
-            'total_amount_sold': sum(t.get('amount', 0) for t in transactions if t.get('type') == 'sell'),
-            'total_quantity_bought': sum(t.get('quantity', 0) for t in transactions if t.get('type') == 'buy'),
-            'total_quantity_sold': sum(t.get('quantity', 0) for t in transactions if t.get('type') == 'sell'),
-            'date_range': {
-                'first': min((t.get('date') for t in transactions), default=None),
-                'last': max((t.get('date') for t in transactions), default=None)
-            }
+            "total_transactions": len(transactions),
+            "total_amount_invested": sum(
+                t.get("amount", 0) for t in transactions if t.get("type") == "buy"
+            ),
+            "total_amount_sold": sum(
+                t.get("amount", 0) for t in transactions if t.get("type") == "sell"
+            ),
+            "total_quantity_bought": sum(
+                t.get("quantity", 0) for t in transactions if t.get("type") == "buy"
+            ),
+            "total_quantity_sold": sum(
+                t.get("quantity", 0) for t in transactions if t.get("type") == "sell"
+            ),
+            "date_range": {
+                "first": min((t.get("date") for t in transactions), default=None),
+                "last": max((t.get("date") for t in transactions), default=None),
+            },
         }
 
-        return jsonify({
-            'transactions': transactions,
-            'summary': summary,
-            'filtered_by': filtered_by,
-            'total_count': len(transactions)
-        })
+        return jsonify(
+            {
+                "transactions": transactions,
+                "summary": summary,
+                "filtered_by": filtered_by,
+                "total_count": len(transactions),
+            }
+        )
 
     except Exception as e:
         logger.exception("Failed to fetch investment transactions")
-        return jsonify({
-            'transactions': [],
-            'summary': {},
-            'filtered_by': None,
-            'total_count': 0,
-            'error': str(e)
-        })
+        return jsonify(
+            {
+                "transactions": [],
+                "summary": {},
+                "filtered_by": None,
+                "total_count": 0,
+                "error": str(e),
+            }
+        )
 
 
 @app.route("/api/investments/performance")
 def api_investments_performance():
     """Get investment performance history over time."""
     lookback_days = int(request.args.get("days", 90))
-    
+
     rows = _rows(
         """
         SELECT 
@@ -1411,9 +1476,9 @@ def api_investments_performance():
         GROUP BY snapshot_date, institution
         ORDER BY snapshot_date ASC
         """,
-        (lookback_days,)
+        (lookback_days,),
     )
-    
+
     # Also get overall performance by date
     overall = _rows(
         """
@@ -1430,13 +1495,10 @@ def api_investments_performance():
         GROUP BY snapshot_date
         ORDER BY snapshot_date ASC
         """,
-        (lookback_days,)
+        (lookback_days,),
     )
-    
-    return jsonify({
-        'by_institution': rows,
-        'overall': overall
-    })
+
+    return jsonify({"by_institution": rows, "overall": overall})
 
 
 @app.route("/api/transactions")
@@ -1463,7 +1525,12 @@ def api_add_investment_basis():
     data = request.get_json(silent=True) or {}
     required = ("account_id", "symbol", "quantity", "total_cost")
     if any(data.get(key) in (None, "") for key in required):
-        return jsonify({"error": "account_id, symbol, quantity, and total_cost are required"}), 400
+        return (
+            jsonify(
+                {"error": "account_id, symbol, quantity, and total_cost are required"}
+            ),
+            400,
+        )
 
     try:
         quantity = float(data["quantity"])
@@ -1471,7 +1538,12 @@ def api_add_investment_basis():
     except (TypeError, ValueError):
         return jsonify({"error": "quantity and total_cost must be numbers"}), 400
     if quantity <= 0 or total_cost < 0:
-        return jsonify({"error": "quantity must be positive and total_cost cannot be negative"}), 400
+        return (
+            jsonify(
+                {"error": "quantity must be positive and total_cost cannot be negative"}
+            ),
+            400,
+        )
 
     entry_mode = data.get("entry_mode", "supplement")
     if entry_mode not in ("supplement", "override"):
@@ -1531,33 +1603,33 @@ def api_update_transaction():
     data = request.json
     if not data or "transaction_id" not in data:
         return jsonify({"error": "Missing transaction_id"}), 400
-    
+
     transaction_id = data["transaction_id"]
     updates = {}
-    
+
     if "description" in data:
         updates["description"] = data["description"]
     if "category" in data:
         updates["user_category"] = data["category"]
     if "excluded" in data:
         updates["excluded"] = data["excluded"]
-    
+
     if not updates:
         return jsonify({"error": "No fields to update"}), 400
-    
+
     try:
         with _db(write=True) as conn:
-            set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+            set_clause = ", ".join([f"{k} = ?" for k in updates])
             values = list(updates.values()) + [transaction_id]
-            
+
             conn.execute(
                 f"UPDATE transactions SET {set_clause}, last_updated = datetime('now') WHERE transaction_id = ?",
-                values
+                values,
             )
             conn.commit()
-        
+
         return jsonify({"success": True})
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Failed to update transaction: {e}")
         return jsonify({"error": str(e)}), 500
 
@@ -1566,6 +1638,7 @@ def api_update_transaction():
 def api_manual_transactions():
     """Get all manual transactions."""
     from .modules.database import get_manual_transactions
+
     return jsonify(get_manual_transactions())
 
 
@@ -1573,15 +1646,15 @@ def api_manual_transactions():
 def api_add_manual_transaction():
     """Add or update a manual transaction with validation."""
     from .modules.database import upsert_manual_transaction
-    
+
     data = request.json
     if not data or "date" not in data or "amount" not in data:
         return jsonify({"error": "Missing required fields"}), 400
-    
+
     # Generate transaction_id if not provided
     if "transaction_id" not in data:
         data["transaction_id"] = f"manual_{uuid.uuid4().hex[:16]}"
-    
+
     try:
         upsert_manual_transaction(data)
         return jsonify({"success": True, "transaction_id": data["transaction_id"]})
@@ -1589,7 +1662,7 @@ def api_add_manual_transaction():
         # Validation error from validate_manual_transaction
         logger.error(f"Validation error adding manual transaction: {e}")
         return jsonify({"error": str(e)}), 400
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Failed to add manual transaction: {e}")
         return jsonify({"error": str(e)}), 500
 
@@ -1598,11 +1671,11 @@ def api_add_manual_transaction():
 def api_update_manual_transaction():
     """Update a manual transaction (all fields editable) with validation."""
     from .modules.database import upsert_manual_transaction
-    
+
     data = request.json
     if not data or "transaction_id" not in data:
         return jsonify({"error": "Missing transaction_id"}), 400
-    
+
     try:
         upsert_manual_transaction(data)
         return jsonify({"success": True})
@@ -1610,7 +1683,7 @@ def api_update_manual_transaction():
         # Validation error from validate_manual_transaction
         logger.error(f"Validation error updating manual transaction: {e}")
         return jsonify({"error": str(e)}), 400
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Failed to update manual transaction: {e}")
         return jsonify({"error": str(e)}), 500
 
@@ -1619,15 +1692,15 @@ def api_update_manual_transaction():
 def api_delete_manual_transaction():
     """Delete a manual transaction."""
     from .modules.database import delete_manual_transaction
-    
+
     transaction_id = request.args.get("transaction_id")
     if not transaction_id:
         return jsonify({"error": "Missing transaction_id"}), 400
-    
+
     try:
         delete_manual_transaction(transaction_id)
         return jsonify({"success": True})
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Failed to delete manual transaction: {e}")
         return jsonify({"error": str(e)}), 500
 
@@ -1635,70 +1708,79 @@ def api_delete_manual_transaction():
 @app.route("/api/manual/csv-upload", methods=["POST"])
 def api_csv_upload():
     """Upload CSV file for bulk manual transaction import with validation and format conversion."""
+
     from .modules.database import upsert_manual_transaction, validate_manual_transaction
-    from datetime import datetime
-    
-    if 'csv_file' not in request.files:
+
+    if "csv_file" not in request.files:
         return jsonify({"error": "No file provided"}), 400
-    
-    file = request.files['csv_file']
-    if file.filename == '':
+
+    file = request.files["csv_file"]
+    if file.filename == "":
         return jsonify({"error": "No file selected"}), 400
-    
-    if not file.filename.endswith('.csv'):
+
+    if not file.filename.endswith(".csv"):
         return jsonify({"error": "File must be a CSV"}), 400
-    
+
     try:
         # Read CSV file
-        stream = io.StringIO(file.stream.read().decode('utf-8'))
+        stream = io.StringIO(file.stream.read().decode("utf-8"))
         csv_reader = csv.reader(stream)
-        
+
         # Skip header row (case-insensitive column matching)
         header = next(csv_reader, None)
         if not header:
             return jsonify({"error": "CSV file is empty"}), 400
-        
+
         # Create case-insensitive column mapping
         column_map = {col.lower().strip(): i for i, col in enumerate(header)}
-        
+
         # Find column indices
-        date_idx = column_map.get('date')
-        account_idx = column_map.get('account')
-        description_idx = column_map.get('description')
-        category_idx = column_map.get('category')
-        amount_idx = column_map.get('amount')
-        
+        date_idx = column_map.get("date")
+        account_idx = column_map.get("account")
+        description_idx = column_map.get("description")
+        category_idx = column_map.get("category")
+        amount_idx = column_map.get("amount")
+
         if None in [date_idx, account_idx, description_idx, category_idx, amount_idx]:
-            return jsonify({"error": f"Missing required columns. Found: {list(column_map.keys())}"}), 400
-        
+            return (
+                jsonify(
+                    {
+                        "error": f"Missing required columns. Found: {list(column_map.keys())}"
+                    }
+                ),
+                400,
+            )
+
         count = 0
         errors = []
-        
+
         for row_num, row in enumerate(csv_reader, start=1):
             if len(row) < 5:
                 errors.append(f"Row {row_num}: Missing required columns")
                 continue
-            
+
             try:
                 # Parse date from MM/DD/YYYY to YYYY-MM-DD
                 date_str = row[date_idx].strip()
                 try:
-                    date_obj = datetime.strptime(date_str, '%m/%d/%Y')
-                    formatted_date = date_obj.strftime('%Y-%m-%d')
+                    date_obj = datetime.strptime(date_str, "%m/%d/%Y")  # noqa: DTZ007
+                    formatted_date = date_obj.strftime("%Y-%m-%d")
                 except ValueError:
                     # Try YYYY-MM-DD format as fallback
                     try:
-                        datetime.strptime(date_str, '%Y-%m-%d')
+                        datetime.strptime(date_str, "%Y-%m-%d")  # noqa: DTZ007
                         formatted_date = date_str
                     except ValueError:
-                        errors.append(f"Row {row_num}: Invalid date format: {date_str}. Expected MM/DD/YYYY or YYYY-MM-DD")
+                        errors.append(
+                            f"Row {row_num}: Invalid date format: {date_str}. Expected MM/DD/YYYY or YYYY-MM-DD"
+                        )
                         continue
-                
+
                 # Parse amount (remove $ and convert to float)
                 amount_str = row[amount_idx].strip()
                 try:
                     # Remove dollar sign and convert
-                    amount_str = amount_str.replace('$', '').replace(',', '').strip()
+                    amount_str = amount_str.replace("$", "").replace(",", "").strip()
                     amount = float(amount_str)
                     if amount == 0:
                         errors.append(f"Row {row_num}: Amount cannot be zero")
@@ -1706,40 +1788,42 @@ def api_csv_upload():
                 except ValueError:
                     errors.append(f"Row {row_num}: Invalid amount: {row[amount_idx]}")
                     continue
-                
+
                 transaction = {
-                    'date': formatted_date,
-                    'account': row[account_idx].strip(),
-                    'description': row[description_idx].strip(),
-                    'category': row[category_idx].strip(),
-                    'amount': amount
+                    "date": formatted_date,
+                    "account": row[account_idx].strip(),
+                    "description": row[description_idx].strip(),
+                    "category": row[category_idx].strip(),
+                    "amount": amount,
                 }
-                
+
                 # Generate transaction_id
-                transaction['transaction_id'] = f"manual_{uuid.uuid4().hex[:16]}"
-                
+                transaction["transaction_id"] = f"manual_{uuid.uuid4().hex[:16]}"
+
                 # Validate transaction
                 is_valid, error_message = validate_manual_transaction(transaction)
                 if not is_valid:
                     errors.append(f"Row {row_num}: {error_message}")
                     continue
-                
+
                 upsert_manual_transaction(transaction)
                 count += 1
-                
-            except Exception as e:
-                errors.append(f"Row {row_num}: {str(e)}")
-        
+
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"Row {row_num}: {e!s}")
+
         if errors:
-            return jsonify({
-                "success": True, 
-                "count": count,
-                "warnings": f"Imported {count} transactions with {len(errors)} errors: {'; '.join(errors[:5])}"
-            })
-        
+            return jsonify(
+                {
+                    "success": True,
+                    "count": count,
+                    "warnings": f"Imported {count} transactions with {len(errors)} errors: {'; '.join(errors[:5])}",
+                }
+            )
+
         return jsonify({"success": True, "count": count})
-        
-    except Exception as e:
+
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Failed to process CSV upload: {e}")
         return jsonify({"error": str(e)}), 500
 
@@ -1756,11 +1840,19 @@ def api_add_manual_snapshot():
     data = request.json
     if not data or "snapshot_date" not in data or "account_id" not in data:
         return jsonify({"error": "Missing required fields"}), 400
-    
+
     if _add_manual_snapshot(data):
-        return jsonify({"success": True})
+        ts = _scalar("SELECT value FROM app_state WHERE key = 'last_manual_snapshot_update'", default=None)
+        return jsonify({"success": True, "last_manual_snapshot_update": ts})
     else:
         return jsonify({"error": "Failed to add snapshot"}), 500
+
+
+@app.route('/api/changes/last_manual_snapshot_update')
+def api_last_manual_snapshot_update():
+    """Return the last manual snapshot update timestamp (UTC string)."""
+    val = _scalar("SELECT value FROM app_state WHERE key = 'last_manual_snapshot_update'", default=None)
+    return jsonify({"last_manual_snapshot_update": val})
 
 
 @app.route("/api/manual/snapshot", methods=["DELETE"])
@@ -1768,12 +1860,13 @@ def api_delete_manual_snapshot():
     """Delete a manual account snapshot."""
     snapshot_date = request.args.get("snapshot_date")
     account_id = request.args.get("account_id")
-    
+
     if not snapshot_date or not account_id:
         return jsonify({"error": "Missing required parameters"}), 400
-    
+
     if _delete_manual_snapshot(snapshot_date, account_id):
-        return jsonify({"success": True})
+        ts = _scalar("SELECT value FROM app_state WHERE key = 'last_manual_snapshot_update'", default=None)
+        return jsonify({"success": True, "last_manual_snapshot_update": ts})
     else:
         return jsonify({"error": "Failed to delete snapshot"}), 500
 
@@ -1850,7 +1943,9 @@ def _read_rule_records() -> list[dict[str, Any]]:
         reader = csv.DictReader(csvfile)
         for row in reader:
             clean = {field: (row.get(field) or "") for field in RULE_FIELDNAMES}
-            is_rule = bool(clean["match_type"].strip()) and not clean["match_type"].lstrip().startswith("#")
+            is_rule = bool(clean["match_type"].strip()) and not clean[
+                "match_type"
+            ].lstrip().startswith("#")
             records.append({"is_rule": is_rule, "row": clean})
     return records
 
@@ -1880,7 +1975,11 @@ def _env_file_path() -> Path:
     if env_path:
         return Path(env_path)
 
-    candidates = [Path.cwd() / ".env", _HERE.parent / ".env", _HERE.parent.parent / ".env"]
+    candidates = [
+        Path.cwd() / ".env",
+        _HERE.parent / ".env",
+        _HERE.parent.parent / ".env",
+    ]
     for candidate in candidates:
         if candidate.exists():
             return candidate
@@ -1888,13 +1987,17 @@ def _env_file_path() -> Path:
 
 
 def _institution_env_key(institution_name: str, environment: str) -> str:
-    safe_name = "".join(ch if ch.isalnum() else "_" for ch in institution_name.upper()).strip("_")
+    safe_name = "".join(
+        ch if ch.isalnum() else "_" for ch in institution_name.upper()
+    ).strip("_")
     safe_name = "_".join(segment for segment in safe_name.split("_") if segment)
     env_name = (environment or PLAID_ENV or "production").upper()
     return f"PLAID_{env_name}_TOKEN_{safe_name or 'INSTITUTION'}"
 
 
-def _save_plaid_token_to_env(institution_name: str, access_token: str, environment: str) -> str:
+def _save_plaid_token_to_env(
+    institution_name: str, access_token: str, environment: str
+) -> str:
     from dotenv import set_key
 
     env_path = _env_file_path()
@@ -1919,27 +2022,111 @@ def api_plaid_tokens():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route("/api/plaid/tokens", methods=['POST'])
+@app.route("/api/admin/plaid/tokens")
+def api_admin_plaid_tokens():
+    """Admin endpoint returning masked tokens and metadata (no raw secrets)."""
+    try:
+        tokens = get_plaid_tokens(active_only=False)
+        masked = []
+        for t in tokens:
+            masked.append(
+                {
+                    "id": t.get("id"),
+                    "profile_name": t.get("profile_name"),
+                    "profile_prefix": t.get("profile_prefix"),
+                    "institution_name": t.get("institution_name"),
+                    "masked_token": (
+                        (str(t.get("access_token") or "")[:10] + "...")
+                        if t.get("access_token")
+                        else "(none)"
+                    ),
+                    "environment": t.get("environment"),
+                    "is_active": bool(t.get("is_active")),
+                }
+            )
+        return jsonify({"success": True, "tokens": masked})
+    except Exception as e:
+        logger.exception("Failed to get admin Plaid tokens")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/admin/plaid/tokens/<int:token_id>/set_active", methods=["POST"])
+def api_admin_set_token_active(token_id: int):
+    """Set a token active/inactive by token id. Expects JSON {"active": true|false}."""
+    try:
+        data = request.get_json(silent=True) or {}
+        target = bool(data.get("active"))
+        tokens = get_plaid_tokens(active_only=False)
+        row = next((r for r in tokens if r.get("id") == token_id), None)
+        if not row:
+            return jsonify({"success": False, "error": "Token id not found"}), 404
+
+        institution = row.get("institution_name")
+        access_token = row.get("access_token")
+        item_id = row.get("item_id")
+        environment = row.get("environment") or PLAID_ENV or "production"
+        profile_name = row.get("profile_name") or "PRIMARY"
+        profile_prefix = row.get("profile_prefix") or "PLAID"
+
+        if target:
+            # Reactivate by upserting the same token (sets is_active=1)
+            success = upsert_plaid_token(
+                institution,
+                access_token,
+                item_id,
+                environment,
+                DATABASE_PATH,
+                profile_name,
+                profile_prefix,
+            )
+        else:
+            # Deactivate via existing helper
+            success = delete_plaid_token(institution)
+
+        if success:
+            return jsonify({"success": True, "message": "Token updated"})
+        else:
+            return jsonify({"success": False, "error": "Failed to update token"}), 500
+    except Exception as e:
+        logger.exception("Failed to set token active state")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/plaid/tokens", methods=["POST"])
 def api_upsert_plaid_token():
     """Add or update a Plaid token."""
     try:
         data = request.get_json(silent=True) or {}
-        institution_name = data.get('institution_name')
-        access_token = data.get('access_token')
-        item_id = data.get('item_id')
-        environment = data.get('environment') or PLAID_ENV or 'production'
-        
+        institution_name = data.get("institution_name")
+        access_token = data.get("access_token")
+        item_id = data.get("item_id")
+        environment = data.get("environment") or PLAID_ENV or "production"
+
         if not institution_name or not access_token:
-            return jsonify({"success": False, "error": "Missing institution_name or access_token"}), 400
-        
-        success = upsert_plaid_token(institution_name, access_token, item_id, environment)
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "Missing institution_name or access_token",
+                    }
+                ),
+                400,
+            )
+
+        success = upsert_plaid_token(
+            institution_name, access_token, item_id, environment
+        )
         if success:
-            env_key = _save_plaid_token_to_env(institution_name, access_token, environment)
-            return jsonify({
-                "success": True,
-                "env_key": env_key,
-                "message": f"Token for {institution_name} saved successfully",
-            })
+            env_key = _save_plaid_token_to_env(
+                institution_name, access_token, environment
+            )
+            return jsonify(
+                {
+                    "success": True,
+                    "env_key": env_key,
+                    "message": f"Token for {institution_name} saved successfully",
+                }
+            )
         else:
             return jsonify({"success": False, "error": "Failed to save token"}), 500
     except Exception as e:
@@ -1947,13 +2134,18 @@ def api_upsert_plaid_token():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route("/api/plaid/tokens/<institution_name>", methods=['DELETE'])
+@app.route("/api/plaid/tokens/<institution_name>", methods=["DELETE"])
 def api_delete_plaid_token(institution_name):
     """Delete/deactivate a Plaid token."""
     try:
         success = delete_plaid_token(institution_name)
         if success:
-            return jsonify({"success": True, "message": f"Token for {institution_name} deactivated"})
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"Token for {institution_name} deactivated",
+                }
+            )
         else:
             return jsonify({"success": False, "error": "Failed to delete token"}), 500
     except Exception as e:
@@ -1961,20 +2153,20 @@ def api_delete_plaid_token(institution_name):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route("/api/plaid/link-token", methods=['POST'])
+@app.route("/api/plaid/link-token", methods=["POST"])
 def api_plaid_link_token():
     """Exchange public token for access token via Plaid API."""
     try:
         from .api import plaid_integration
-        
+
         data = request.get_json(silent=True) or {}
-        public_token = data.get('public_token')
-        institution_name = data.get('institution_name')
-        environment = data.get('environment') or PLAID_ENV or 'production'
-        
+        public_token = data.get("public_token")
+        institution_name = data.get("institution_name")
+        environment = data.get("environment") or PLAID_ENV or "production"
+
         if not public_token:
             return jsonify({"success": False, "error": "Missing public_token"}), 400
-        
+
         profile = plaid_integration.get_default_plaid_profile()
         client = plaid_integration.get_plaid_client(profile)
 
@@ -1986,28 +2178,39 @@ def api_plaid_link_token():
             ItemPublicTokenExchangeRequest(public_token=public_token)
         )
         access_token = response["access_token"]
-        item_id = response["item_id"] if "item_id" in response else None
+        item_id = response.get("item_id", None)
         institution_name = institution_name or "Plaid Institution"
-        
-        success = upsert_plaid_token(institution_name, access_token, item_id, environment)
-        
+
+        success = upsert_plaid_token(
+            institution_name, access_token, item_id, environment
+        )
+
         if success:
-            env_key = _save_plaid_token_to_env(institution_name, access_token, environment)
-            return jsonify({
-                "success": True, 
-                "item_id": item_id,
-                "env_key": env_key,
-                "message": f"Successfully linked {institution_name}"
-            })
+            env_key = _save_plaid_token_to_env(
+                institution_name, access_token, environment
+            )
+            return jsonify(
+                {
+                    "success": True,
+                    "item_id": item_id,
+                    "env_key": env_key,
+                    "message": f"Successfully linked {institution_name}",
+                }
+            )
         else:
-            return jsonify({"success": False, "error": "Failed to save token to database"}), 500
-            
+            return (
+                jsonify(
+                    {"success": False, "error": "Failed to save token to database"}
+                ),
+                500,
+            )
+
     except Exception as e:
         logger.exception("Failed to exchange Plaid public token")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route("/api/plaid/create-link-token", methods=['POST'])
+@app.route("/api/plaid/create-link-token", methods=["POST"])
 def api_create_link_token():
     """Create a Plaid link token for the frontend."""
     try:
@@ -2018,19 +2221,22 @@ def api_create_link_token():
             user_id="finance_sync_" + uuid.uuid4().hex,
             profile=profile,
         )
-        return jsonify({
-            "success": True,
-            "link_token": link_token,
-            "environment": profile.env,
-            "profile": profile.name,
-        })
-        
+        return jsonify(
+            {
+                "success": True,
+                "link_token": link_token,
+                "environment": profile.env,
+                "profile": profile.name,
+            }
+        )
+
     except Exception as e:
         logger.exception("Failed to create Plaid link token")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
 # ─── Category Rules Management API ───────────────────────────────────────────────
+
 
 @app.route("/api/rules")
 def api_rules():
@@ -2043,16 +2249,161 @@ def api_rules():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route("/api/rules", methods=['POST'])
+@app.route("/api/rules", methods=["POST"])
 def api_add_rule():
     """Add a new category rule."""
     try:
-        rule_data = _coerce_rule_payload(request.get_json(silent=True) or {})
+        payload = request.get_json(silent=True) or {}
+        rule_data = _coerce_rule_payload(payload)
+
+        # Optional insertion index (insert before this file-row id)
+        insert_before = payload.get("insert_before_id")
+
+        # Read existing records and normalized rules
         records = _read_rule_records()
-        records.append({"is_rule": True, "row": rule_data})
+        # Duplicate check: exact match of CSV row contents
+        for idx, rec in enumerate(records):
+            if not rec["is_rule"]:
+                continue
+            existing = rec["row"]
+            # compare normalized fields
+            if all(
+                (
+                    str(existing.get(k) or "").strip()
+                    == str(rule_data.get(k) or "").strip()
+                )
+                for k in [
+                    "match_type",
+                    "match_field",
+                    "pattern",
+                    "user_category",
+                    "normalized_merchant",
+                    "exclude",
+                ]
+            ):
+                return (
+                    jsonify(
+                        {
+                            "success": False,
+                            "error": "Duplicate rule",
+                            "diagnostics": {"duplicate": True, "existing_index": idx},
+                        }
+                    ),
+                    400,
+                )
+
+        # Build CategoryRule object for candidate
+        candidate = _categorizer.CategoryRule(
+            match_type=rule_data["match_type"],
+            match_field=rule_data["match_field"],
+            pattern=rule_data["pattern"].upper(),
+            user_category=rule_data.get("user_category", ""),
+            normalized_merchant=rule_data.get("normalized_merchant", ""),
+            exclude=bool(
+                str(rule_data.get("exclude", "")).strip().lower()
+                in {"1", "true", "yes", "on"}
+            ),
+        )
+
+        # Load existing ordered rules as CategoryRule objects
+        existing_rules = _categorizer.load_rules()
+
+        # Determine insertion index (default: append at end)
+        insertion_index = (
+            len(existing_rules) if insert_before is None else int(insert_before)
+        )
+
+        # Load current transactions to test reachability
+        txns = _get_transactions()
+
+        # For each txn, determine index of first matching existing rule
+        matched_by = {}
+        for i, txn in enumerate(txns):
+            matched_idx = None
+            for ridx, rule in enumerate(existing_rules):
+                if _categorizer._rule_matches(rule, txn):
+                    matched_idx = ridx
+                    break
+            matched_by[i] = matched_idx
+
+        # Which transactions would candidate match?
+        candidate_matches = [
+            i
+            for i, txn in enumerate(txns)
+            if _categorizer._rule_matches(candidate, txn)
+        ]
+
+        # If candidate matches nothing, it's probably harmless but inform user
+        if not candidate_matches:
+            diagnostics = {"unreachable": True, "matched_count": 0}
+            # still allow creation if user forces it by sending insert_before
+            if insert_before is None:
+                return (
+                    jsonify(
+                        {
+                            "success": False,
+                            "error": "Rule would not match any current transactions",
+                            "diagnostics": diagnostics,
+                        }
+                    ),
+                    400,
+                )
+
+        else:
+            # Check if all matched txns are already captured by earlier rules
+            already_captured = []
+            earliest_conflict = None
+            for idx in candidate_matches:
+                m = matched_by.get(idx)
+                if m is not None and m < insertion_index:
+                    already_captured.append(idx)
+                    if earliest_conflict is None or m < earliest_conflict:
+                        earliest_conflict = m
+
+            if len(already_captured) == len(candidate_matches):
+                # Unreachable because earlier rules already handle all these txns
+                diagnostics = {
+                    "unreachable": True,
+                    "matched_count": len(candidate_matches),
+                    "already_captured_count": len(already_captured),
+                    "earliest_conflicting_rule_id": earliest_conflict,
+                }
+                # Offer insertion suggestion: insert before earliest_conflict to take effect
+                if earliest_conflict is not None:
+                    diagnostics["suggest_insert_before"] = earliest_conflict
+
+                # If client explicitly forces creation, allow it
+                if payload.get("force"):
+                    # fall through to insertion
+                    pass
+                else:
+                    return (
+                        jsonify(
+                            {
+                                "success": False,
+                                "error": "Rule would be overshadowed by earlier rules",
+                                "diagnostics": diagnostics,
+                            }
+                        ),
+                        409,
+                    )
+
+        # Passed checks (or user provided insert_before)
+        # Insert into records at requested position
+        row_record = {"is_rule": True, "row": rule_data}
+        if insert_before is None:
+            records.append(row_record)
+        else:
+            idx = int(insert_before)
+            if idx < 0 or idx > len(records):
+                records.append(row_record)
+            else:
+                records.insert(idx, row_record)
+
         _write_rule_records(records)
-        
-        return jsonify({"success": True, "message": "Rule added successfully", "rule": rule_data})
+        return jsonify(
+            {"success": True, "message": "Rule added successfully", "rule": rule_data}
+        )
     except ValueError as e:
         return jsonify({"success": False, "error": str(e)}), 400
     except Exception as e:
@@ -2060,7 +2411,7 @@ def api_add_rule():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route("/api/rules/<int:rule_id>", methods=['PUT'])
+@app.route("/api/rules/<int:rule_id>", methods=["PUT"])
 def api_update_rule(rule_id):
     """Update a category rule by its file-backed id."""
     try:
@@ -2071,7 +2422,9 @@ def api_update_rule(rule_id):
 
         records[rule_id] = {"is_rule": True, "row": rule_data}
         _write_rule_records(records)
-        return jsonify({"success": True, "message": "Rule updated successfully", "rule": rule_data})
+        return jsonify(
+            {"success": True, "message": "Rule updated successfully", "rule": rule_data}
+        )
     except ValueError as e:
         return jsonify({"success": False, "error": str(e)}), 400
     except Exception as e:
@@ -2079,7 +2432,7 @@ def api_update_rule(rule_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route("/api/rules/<int:rule_id>", methods=['DELETE'])
+@app.route("/api/rules/<int:rule_id>", methods=["DELETE"])
 def api_delete_rule(rule_id):
     """Delete a category rule by its file-backed id."""
     try:
@@ -2089,19 +2442,25 @@ def api_delete_rule(rule_id):
 
         deleted_rule = records.pop(rule_id)["row"]
         _write_rule_records(records)
-        return jsonify({"success": True, "message": "Rule deleted successfully", "deleted_rule": deleted_rule})
+        return jsonify(
+            {
+                "success": True,
+                "message": "Rule deleted successfully",
+                "deleted_rule": deleted_rule,
+            }
+        )
     except Exception as e:
         logger.exception("Failed to delete category rule")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route("/api/rules/bulk", methods=['POST'])
+@app.route("/api/rules/bulk", methods=["POST"])
 def api_bulk_add_rules():
     """Add multiple category rules at once."""
     try:
         data = request.get_json(silent=True) or {}
-        rules = data.get('rules', [])
-        
+        rules = data.get("rules", [])
+
         if not rules:
             return jsonify({"success": False, "error": "No rules provided"}), 400
 
@@ -2109,7 +2468,9 @@ def api_bulk_add_rules():
         records = _read_rule_records()
         records.extend({"is_rule": True, "row": rule} for rule in normalized_rules)
         _write_rule_records(records)
-        return jsonify({"success": True, "message": f"Added {len(rules)} rules successfully"})
+        return jsonify(
+            {"success": True, "message": f"Added {len(rules)} rules successfully"}
+        )
     except ValueError as e:
         return jsonify({"success": False, "error": str(e)}), 400
     except Exception as e:
@@ -2118,6 +2479,7 @@ def api_bulk_add_rules():
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
+
 
 def _print_startup():
     print("\n" + "=" * 60)
@@ -2131,18 +2493,27 @@ def _print_startup():
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Finance Sync Dashboard")
-    parser.add_argument("--no-sync", action="store_true", 
-                       help="Skip data sync and start dashboard with existing data")
-    parser.add_argument("--sync-transactions", action="store_true",
-                       help="Only sync transactions (skip investments)")
-    parser.add_argument("--sync-investments", action="store_true",
-                       help="Only sync investments (skip transactions)")
+    parser.add_argument(
+        "--no-sync",
+        action="store_true",
+        help="Skip data sync and start dashboard with existing data",
+    )
+    parser.add_argument(
+        "--sync-transactions",
+        action="store_true",
+        help="Only sync transactions (skip investments)",
+    )
+    parser.add_argument(
+        "--sync-investments",
+        action="store_true",
+        help="Only sync investments (skip transactions)",
+    )
     args = parser.parse_args()
-    
+
     # ── Run the sync pipeline first (unless --no-sync is specified) ─────────────────────
     if not args.no_sync:
         # Import here (not at module top) to avoid circular imports with config.
-        from .main import run_pipeline  # noqa: PLC0415
+        from .main import run_pipeline
 
         print("\n" + "=" * 60)
         print("  Finance Sync — Syncing data before dashboard start…")
@@ -2150,9 +2521,10 @@ if __name__ == "__main__":
 
         # Set environment variables for selective sync
         import os
+
         sync_transactions = True
         sync_investments = True
-        
+
         if args.sync_transactions:
             sync_transactions = True
             sync_investments = False
@@ -2163,7 +2535,11 @@ if __name__ == "__main__":
             print("  Selective sync: Investments only")
 
         try:
-            run_pipeline(enable_sheets=False, sync_transactions=sync_transactions, sync_investments=sync_investments)
+            run_pipeline(
+                enable_sheets=False,
+                sync_transactions=sync_transactions,
+                sync_investments=sync_investments,
+            )
         except SystemExit as exc:
             # run_pipeline calls sys.exit(1) on fatal pipeline errors.
             # We still want to start the dashboard so the user can see whatever

@@ -10,7 +10,11 @@
       <h1 class="text-2xl font-bold text-slate-100">Manual Account Snapshots</h1>
       <p class="text-sm text-slate-400 mt-1">Add or edit manual account balance entries</p>
     </div>
-    <div class="ml-auto">
+    <div class="ml-auto flex flex-wrap items-center gap-3">
+      <span id="history-status" class="text-xs text-slate-500"></span>
+      <button id="recalculate-history-btn" type="button" class="border border-slate-600 hover:border-sky-500 text-slate-300 hover:text-sky-400 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
+        Recalculate History
+      </button>
       <button id="add-btn" class="bg-sky-500 hover:bg-sky-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
         + Add Snapshot
       </button>
@@ -86,6 +90,7 @@
         <div>
           <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Current Balance</label>
           <input type="number" step="0.01" id="edit-current-balance" required class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="0.00">
+          <p id="prior-balance" class="text-xs text-slate-400 mt-1">Previous: —</p>
         </div>
         <div>
           <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Available Balance</label>
@@ -126,8 +131,59 @@ let snapshots = [];
 loadSnapshots();
 
 document.getElementById('add-btn').addEventListener('click', () => openModal());
+document.getElementById('recalculate-history-btn').addEventListener('click', recalculateHistory);
 document.getElementById('cancel-btn').addEventListener('click', closeModal);
 document.getElementById('edit-form').addEventListener('submit', handleSubmit);
+
+loadHistoryStatus();
+
+function loadHistoryStatus() {
+  fetch('/api/networth/history/status')
+    .then(r => r.json())
+    .then(data => {
+      const el = document.getElementById('history-status');
+      if (!el || data.error) return;
+      if (data.needs_recalculation) {
+        el.textContent = `${data.missing_dates.length} history date${data.missing_dates.length === 1 ? '' : 's'} missing`;
+        el.className = 'text-xs text-amber-400';
+      } else {
+        el.textContent = `${data.history_dates} history dates current`;
+        el.className = 'text-xs text-emerald-400';
+      }
+    })
+    .catch(() => {});
+}
+
+function recalculateHistory() {
+  const button = document.getElementById('recalculate-history-btn');
+  const status = document.getElementById('history-status');
+  if (!confirm('Recalculate all net worth history from the raw snapshot tables?')) return;
+
+  button.disabled = true;
+  button.textContent = 'Recalculating...';
+  status.textContent = 'Rebuilding history';
+  status.className = 'text-xs text-slate-400';
+
+  fetch('/api/networth/history/recalculate', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (!data.success) throw new Error(data.error || 'Rebuild failed');
+      status.textContent = `${data.rows_written} history dates rebuilt`;
+      status.className = 'text-xs text-emerald-400';
+      window.dispatchEvent(new CustomEvent('app:manualSnapshotUpdated', {
+        detail: { ts: data.completed_at }
+      }));
+    })
+    .catch(err => {
+      status.textContent = err.message;
+      status.className = 'text-xs text-red-400';
+    })
+    .finally(() => {
+      button.disabled = false;
+      button.textContent = 'Recalculate History';
+      loadHistoryStatus();
+    });
+}
 
 function loadSnapshots() {
   document.getElementById('table-wrap').innerHTML = '<div class="spinner"></div>';
@@ -171,6 +227,7 @@ function renderTable() {
       <td class="${bg} text-right px-4 py-2 text-sm font-medium">${fmtAmt(s.current_balance || 0)}</td>
       <td class="${bg} text-center px-4 py-2">
         <button onclick="editSnapshot('${s.snapshot_date}', '${s.account_id}')" class="text-sky-400 hover:text-sky-300 text-xs mr-2">Edit</button>
+        <button onclick="quickUpdate('${s.account_id}')" class="text-emerald-400 hover:text-emerald-300 text-xs mr-2">Update</button>
         <button onclick="deleteSnapshot('${s.snapshot_date}', '${s.account_id}')" class="text-red-400 hover:text-red-300 text-xs">Delete</button>
       </td>
     </tr>`;
@@ -187,19 +244,33 @@ function openModal(snapshot = null) {
   const modal = document.getElementById('edit-modal');
   const title = document.getElementById('modal-title');
   const form = document.getElementById('edit-form');
-  
+  const isQuick = snapshot && snapshot._quick === true;
+
   if (snapshot) {
-    title.textContent = 'Edit Snapshot';
-    document.getElementById('edit-original-date').value = snapshot.snapshot_date;
-    document.getElementById('edit-original-account-id').value = snapshot.account_id;
-    document.getElementById('edit-date').value = snapshot.snapshot_date;
+    title.textContent = isQuick ? 'Quick Update' : 'Edit Snapshot';
+    // For quick updates we don't populate the original hidden fields so a new record is created
+    document.getElementById('edit-original-date').value = isQuick ? '' : snapshot.snapshot_date;
+    document.getElementById('edit-original-account-id').value = isQuick ? '' : snapshot.account_id;
+    // Use local date (YYYY-MM-DD) to avoid UTC shift creating tomorrow's date
+    document.getElementById('edit-date').value = isQuick ? new Date().toLocaleDateString('en-CA') : snapshot.snapshot_date;
     document.getElementById('edit-account-id').value = snapshot.account_id;
     document.getElementById('edit-account-name').value = snapshot.account_name || '';
     document.getElementById('edit-institution').value = snapshot.institution || '';
     document.getElementById('edit-account-type').value = snapshot.account_type || 'depository';
     document.getElementById('edit-account-subtype').value = snapshot.account_subtype || '';
-    document.getElementById('edit-current-balance').value = snapshot.current_balance || 0;
-    document.getElementById('edit-available-balance').value = snapshot.available_balance || 0;
+    // For quick updates leave the current balance blank for user to enter new value
+    document.getElementById('edit-current-balance').value = isQuick ? '' : (snapshot.current_balance || 0);
+    // For quick updates, leave available blank so it will match the current balance when submitted
+    document.getElementById('edit-available-balance').value = isQuick ? '' : (snapshot.available_balance || '');
+    // Show prior balance preview
+    const priorEl = document.getElementById('prior-balance');
+    if (snapshot && snapshot.current_balance !== undefined && snapshot.current_balance !== null) {
+      priorEl.textContent = 'Previous: ' + fmtAmt(snapshot.current_balance || 0);
+      priorEl.style.display = '';
+    } else {
+      priorEl.textContent = 'Previous: —';
+      priorEl.style.display = 'none';
+    }
     document.getElementById('edit-credit-limit').value = snapshot.credit_limit || 0;
     document.getElementById('edit-currency').value = snapshot.currency || 'USD';
   } else {
@@ -207,12 +278,28 @@ function openModal(snapshot = null) {
     form.reset();
     document.getElementById('edit-original-date').value = '';
     document.getElementById('edit-original-account-id').value = '';
-    document.getElementById('edit-date').value = new Date().toISOString().split('T')[0];
+    // Use local date (YYYY-MM-DD)
+    document.getElementById('edit-date').value = new Date().toLocaleDateString('en-CA');
     document.getElementById('edit-currency').value = 'USD';
   }
-  
+
   modal.classList.remove('hidden');
   modal.classList.add('flex');
+}
+
+function quickUpdate(accountId) {
+  // Find latest snapshot for this account
+  const acc = snapshots.filter(s => s.account_id === accountId);
+  if (!acc || acc.length === 0) {
+    alert('No snapshot found for this account to copy from.');
+    return;
+  }
+  // Choose the newest by snapshot_date (ISO YYYY-MM-DD sorts lexicographically)
+  acc.sort((a,b) => (a.snapshot_date < b.snapshot_date ? 1 : -1));
+  const latest = Object.assign({}, acc[0]);
+  latest._quick = true;
+  // Open modal prefilled but current_balance left blank
+  openModal(latest);
 }
 
 function closeModal() {
@@ -227,6 +314,9 @@ function handleSubmit(e) {
   const originalDate = document.getElementById('edit-original-date').value;
   const originalAccountId = document.getElementById('edit-original-account-id').value;
   
+  const currentBalanceRaw = document.getElementById('edit-current-balance').value;
+  const availableRaw = document.getElementById('edit-available-balance').value;
+
   const snapshot = {
     snapshot_date: document.getElementById('edit-date').value,
     account_id: document.getElementById('edit-account-id').value,
@@ -234,8 +324,9 @@ function handleSubmit(e) {
     institution: document.getElementById('edit-institution').value,
     account_type: document.getElementById('edit-account-type').value,
     account_subtype: document.getElementById('edit-account-subtype').value,
-    current_balance: parseFloat(document.getElementById('edit-current-balance').value) || 0,
-    available_balance: parseFloat(document.getElementById('edit-available-balance').value) || 0,
+    current_balance: currentBalanceRaw === '' ? 0 : parseFloat(currentBalanceRaw) || 0,
+    // If available is left blank, match the current balance
+    available_balance: (availableRaw === '' || availableRaw === null) ? (currentBalanceRaw === '' ? 0 : parseFloat(currentBalanceRaw) || 0) : (parseFloat(availableRaw) || 0),
     credit_limit: parseFloat(document.getElementById('edit-credit-limit').value) || 0,
     currency: document.getElementById('edit-currency').value,
   };
@@ -264,6 +355,11 @@ function saveSnapshot(snapshot) {
     if (data.success) {
       closeModal();
       loadSnapshots();
+      // Broadcast immediate update for other pages/tabs
+      const ts = data.last_manual_snapshot_update || new Date().toISOString();
+      try { window.dispatchEvent(new CustomEvent('app:manualSnapshotUpdated', { detail: { ts } })); } catch(e){}
+      try { localStorage.setItem('last_manual_snapshot_update', ts); } catch(e){}
+      try { if (typeof BroadcastChannel !== 'undefined') new BroadcastChannel('finance_sync_updates').postMessage({ type: 'manualSnapshotUpdated', ts }); } catch (e) {}
     } else {
       alert('Failed to save snapshot: ' + (data.error || 'Unknown error'));
     }
@@ -292,6 +388,10 @@ function deleteSnapshot(snapshotDate, accountId) {
   .then(data => {
     if (data.success) {
       loadSnapshots();
+      const ts = data.last_manual_snapshot_update || new Date().toISOString();
+      try { window.dispatchEvent(new CustomEvent('app:manualSnapshotUpdated', { detail: { ts } })); } catch(e){}
+      try { localStorage.setItem('last_manual_snapshot_update', ts); } catch(e){}
+      try { if (typeof BroadcastChannel !== 'undefined') new BroadcastChannel('finance_sync_updates').postMessage({ type: 'manualSnapshotUpdated', ts }); } catch (e) {}
     } else {
       alert('Failed to delete snapshot: ' + (data.error || 'Unknown error'));
     }

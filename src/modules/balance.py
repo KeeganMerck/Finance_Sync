@@ -13,18 +13,36 @@ Design principle:
   - Returns today's date as snapshot_date for all fetched balances
 """
 
-import re
 import logging
-from pathlib import Path
+import re
 from datetime import date
-from typing import List, Optional
-
-from ..core.config import USE_PLAID, DATABASE_PATH, ENABLE_DATABASE, DRY_RUN, GOOGLE_SHEETS_ENABLED, GOOGLE_SHEETS_SPREADSHEET_NAME, GOOGLE_SHEETS_CREDENTIALS_PATH
-from .database import upsert_snapshots as db_upsert_snapshots, get_latest_balances as db_get_latest_balances, get_balance_history as db_get_balance_history, get_net_worth_history as db_get_net_worth_history, get_latest_manual_snapshots as db_get_latest_manual_snapshots, upsert_investment_holdings as db_upsert_investment_holdings, upsert_investment_holdings_history as db_upsert_investment_holdings_history
-from ..api import plaid_integration
+from pathlib import Path
 
 import gspread
 from google.oauth2.service_account import Credentials
+
+from ..api import plaid_integration
+from ..core.config import (
+    DATABASE_PATH,
+    DRY_RUN,
+    ENABLE_DATABASE,
+    GOOGLE_SHEETS_CREDENTIALS_PATH,
+    GOOGLE_SHEETS_ENABLED,
+    GOOGLE_SHEETS_SPREADSHEET_NAME,
+    USE_PLAID,
+)
+from .database import (
+    eastern_today,
+)
+from .database import get_balance_history as db_get_balance_history
+from .database import get_latest_balances as db_get_latest_balances
+from .database import get_latest_manual_snapshots as db_get_latest_manual_snapshots
+from .database import get_net_worth_history as db_get_net_worth_history
+from .database import upsert_investment_holdings as db_upsert_investment_holdings
+from .database import (
+    upsert_investment_holdings_history as db_upsert_investment_holdings_history,
+)
+from .database import upsert_snapshots as db_upsert_snapshots
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +87,7 @@ def fetch_balances() -> list[dict]:
         return []
 
     all_balances = []
-    snapshot_date = date.today().isoformat()
+    snapshot_date = eastern_today()
 
     for profile in plaid_profiles:
         access_tokens = plaid_integration.get_access_tokens(profile)
@@ -80,27 +98,34 @@ def fetch_balances() -> list[dict]:
             )
             continue
 
-        for institution_name, access_token in access_tokens.items():
+        for institution_name, token_info in access_tokens.items():
+            access_token = (
+                token_info["access_token"]
+                if isinstance(token_info, dict)
+                else token_info
+            )
+            token_source = (
+                token_info.get("source") if isinstance(token_info, dict) else "env"
+            )
             try:
                 logger.info(
-                    f"Processing institution for balances: "
-                    f"{profile.name}/{institution_name}"
+                    f"Processing institution for balances: {profile.name}/{institution_name} (token_source={token_source})"
                 )
 
                 accounts = _get_accounts_with_balances(access_token, profile)
 
                 for acct in accounts:
                     balance_dict = {
-                        'snapshot_date': snapshot_date,
-                        'account_id': acct['account_id'],
-                        'account_name': f"{acct['name']} --{acct['mask']}",
-                        'institution': institution_name,
-                        'account_type': acct['type'],
-                        'account_subtype': acct['subtype'],
-                        'current_balance': acct.get('current_balance'),
-                        'available_balance': acct.get('available_balance'),
-                        'credit_limit': acct.get('credit_limit'),
-                        'currency': acct.get('currency', 'USD'),
+                        "snapshot_date": snapshot_date,
+                        "account_id": acct["account_id"],
+                        "account_name": f"{acct['name']} --{acct['mask']}",
+                        "institution": institution_name,
+                        "account_type": acct["type"],
+                        "account_subtype": acct["subtype"],
+                        "current_balance": acct.get("current_balance"),
+                        "available_balance": acct.get("available_balance"),
+                        "credit_limit": acct.get("credit_limit"),
+                        "currency": acct.get("currency", "USD"),
                     }
                     all_balances.append(balance_dict)
 
@@ -147,11 +172,11 @@ def fetch_manual_balances() -> list[dict]:
         logger.debug("No manual account snapshots found — skipping.")
         return []
 
-    today = date.today().isoformat()
+    today = eastern_today()
     stamped = []
     for row in raw:
         snapshot = dict(row)
-        snapshot['snapshot_date'] = today
+        snapshot["snapshot_date"] = today
         stamped.append(snapshot)
 
     logger.info(
@@ -201,18 +226,24 @@ def fetch_investments() -> list[dict]:
         try:
             institutions = profile.all_institutions
             if not institutions:
-                logger.debug(f"{profile.name}: no institutions found, skipping investments fetch")
+                logger.debug(
+                    f"{profile.name}: no institutions found, skipping investments fetch"
+                )
                 continue
-                
+
             for institution_name, access_token in institutions.items():
                 try:
                     # First get accounts to filter for investment/brokerage types
                     accounts = _get_accounts_with_balances(access_token, profile)
-                    investment_accounts = [a for a in accounts if a['type'] in ['investment', 'brokerage']]
+                    investment_accounts = [
+                        a for a in accounts if a["type"] in ["investment", "brokerage"]
+                    ]
 
                     if investment_accounts:
                         # Fetch investments for this institution
-                        institution_holdings = plaid_integration.get_investments(access_token, profile)
+                        institution_holdings = plaid_integration.get_investments(
+                            access_token, profile
+                        )
                         all_holdings.extend(institution_holdings)
 
                         logger.info(
@@ -230,9 +261,7 @@ def fetch_investments() -> list[dict]:
                     )
                     continue
         except Exception as e:
-            logger.warning(
-                f"{profile.name}: failed to process institutions: {e}"
-            )
+            logger.warning(f"{profile.name}: failed to process institutions: {e}")
             continue
 
     logger.info(f"Fetched {len(all_holdings)} total investment holding(s) from Plaid.")
@@ -254,14 +283,18 @@ def fetch_investment_transactions(start_date: date, end_date: date) -> list[dict
         List of investment transaction dicts with transaction details.
     """
     if not USE_PLAID:
-        logger.info("Plaid disabled via config — skipping investment transactions fetch.")
+        logger.info(
+            "Plaid disabled via config — skipping investment transactions fetch."
+        )
         return []
 
     from ..api import plaid_integration
 
     profiles = plaid_integration.get_plaid_profiles()
     if not profiles:
-        logger.warning("No Plaid profiles configured. Returning empty investment transactions.")
+        logger.warning(
+            "No Plaid profiles configured. Returning empty investment transactions."
+        )
         return []
 
     all_transactions = []
@@ -270,19 +303,25 @@ def fetch_investment_transactions(start_date: date, end_date: date) -> list[dict
         try:
             institutions = profile.all_institutions
             if not institutions:
-                logger.debug(f"{profile.name}: no institutions found, skipping investment transactions fetch")
+                logger.debug(
+                    f"{profile.name}: no institutions found, skipping investment transactions fetch"
+                )
                 continue
-                
+
             for institution_name, access_token in institutions.items():
                 try:
                     # First get accounts to filter for investment/brokerage types
                     accounts = _get_accounts_with_balances(access_token, profile)
-                    investment_accounts = [a for a in accounts if a['type'] in ['investment', 'brokerage']]
+                    investment_accounts = [
+                        a for a in accounts if a["type"] in ["investment", "brokerage"]
+                    ]
 
                     if investment_accounts:
                         # Fetch investment transactions for this institution
-                        institution_transactions = plaid_integration.get_investment_transactions(
-                            access_token, start_date, end_date, profile
+                        institution_transactions = (
+                            plaid_integration.get_investment_transactions(
+                                access_token, start_date, end_date, profile
+                            )
                         )
                         all_transactions.extend(institution_transactions)
 
@@ -301,12 +340,12 @@ def fetch_investment_transactions(start_date: date, end_date: date) -> list[dict
                     )
                     continue
         except Exception as e:
-            logger.warning(
-                f"{profile.name}: failed to process institutions: {e}"
-            )
+            logger.warning(f"{profile.name}: failed to process institutions: {e}")
             continue
 
-    logger.info(f"Fetched {len(all_transactions)} total investment transaction(s) from Plaid.")
+    logger.info(
+        f"Fetched {len(all_transactions)} total investment transaction(s) from Plaid."
+    )
     return all_transactions
 
 
@@ -334,11 +373,13 @@ def upsert_investment_holdings(holdings: list[dict]) -> dict:
     try:
         result = db_upsert_investment_holdings(holdings)
         logger.info(f"Upserted {result['written']} investment holding(s) to SQLite.")
-        
+
         # Also save to history table for performance tracking
         history_result = db_upsert_investment_holdings_history(holdings)
-        logger.info(f"Saved {history_result['written']} investment holding(s) to history.")
-        
+        logger.info(
+            f"Saved {history_result['written']} investment holding(s) to history."
+        )
+
         return result
     except Exception as e:
         logger.exception(f"Failed to upsert investment holdings: {e}")
@@ -369,23 +410,23 @@ def _get_accounts_with_balances(access_token: str, profile=None) -> list[dict]:
         response = client.accounts_balance_get(request)
 
         accounts = []
-        for acct in response['accounts']:
-            balances = acct.get('balances', {})
+        for acct in response["accounts"]:
+            balances = acct.get("balances", {})
 
-            current_balance = balances.get('current')
-            available_balance = balances.get('available')
-            credit_limit = balances.get('limit')
+            current_balance = balances.get("current")
+            available_balance = balances.get("available")
+            credit_limit = balances.get("limit")
 
             account_dict = {
-                'account_id': acct.account_id,
-                'name': acct.name,
-                'mask': acct.mask,
-                'type': str(acct.type),
-                'subtype': str(acct.subtype),
-                'current_balance': current_balance,
-                'available_balance': available_balance,
-                'credit_limit': credit_limit,
-                'currency': balances.get('iso_currency_code', 'USD'),
+                "account_id": acct.account_id,
+                "name": acct.name,
+                "mask": acct.mask,
+                "type": str(acct.type),
+                "subtype": str(acct.subtype),
+                "current_balance": current_balance,
+                "available_balance": available_balance,
+                "credit_limit": credit_limit,
+                "currency": balances.get("iso_currency_code", "USD"),
             }
             accounts.append(account_dict)
 
@@ -394,6 +435,7 @@ def _get_accounts_with_balances(access_token: str, profile=None) -> list[dict]:
     except Exception as e:
         logger.exception(f"Failed to fetch accounts with balances: {e}")
         raise
+
 
 """
 Balance Store
@@ -409,7 +451,8 @@ All functions respect the ENABLE_DATABASE config flag and handle errors
 gracefully with appropriate logging.
 """
 
-def upsert_snapshots(snapshots: list[dict], db_path: Optional[Path] = None) -> int:
+
+def upsert_snapshots(snapshots: list[dict], db_path: Path | None = None) -> int:
     """
     Batch upsert account balance snapshots to the database.
 
@@ -433,7 +476,7 @@ def upsert_snapshots(snapshots: list[dict], db_path: Optional[Path] = None) -> i
     return db_upsert_snapshots(snapshots, db_path)
 
 
-def get_latest_balances(db_path: Optional[Path] = None) -> list[dict]:
+def get_latest_balances(db_path: Path | None = None) -> list[dict]:
     """
     Return the most recent snapshot for each account_id.
 
@@ -457,7 +500,7 @@ def get_latest_balances(db_path: Optional[Path] = None) -> list[dict]:
     return db_get_latest_balances(db_path)
 
 
-def get_balance_history(days: int = 90, db_path: Optional[Path] = None) -> list[dict]:
+def get_balance_history(days: int = 90, db_path: Path | None = None) -> list[dict]:
     """
     Return all snapshots from the last N days.
 
@@ -482,7 +525,7 @@ def get_balance_history(days: int = 90, db_path: Optional[Path] = None) -> list[
     return db_get_balance_history(days, db_path)
 
 
-def get_net_worth_history(db_path: Optional[Path] = None) -> list[dict]:
+def get_net_worth_history(db_path: Path | None = None) -> list[dict]:
     """
     Return net worth history aggregated by snapshot date.
 
@@ -511,6 +554,7 @@ def get_net_worth_history(db_path: Optional[Path] = None) -> list[dict]:
 
     return db_get_net_worth_history(db_path)
 
+
 """
 balance_export.py
 ==================
@@ -526,70 +570,72 @@ Two sheets are created:
 
 # ─── Formatting Helpers ─────────────────────────────────────────────────────
 
+
 def capitalize_first(text: str) -> str:
     """Capitalize only the first letter of a string."""
     if not text:
-        return ''
-    return text[0].upper() + text[1:].lower() if text else ''
+        return ""
+    return text[0].upper() + text[1:].lower() if text else ""
 
 
 def title_case(text: str) -> str:
     """Capitalize the first letter of each word."""
     if not text:
-        return ''
-    return ' '.join(word.capitalize() for word in text.split())
+        return ""
+    return " ".join(word.capitalize() for word in text.split())
 
 
 def normalize_account_name(account_name: str) -> str:
     """
     Normalize account name by removing mask symbols, special characters, and formatting.
-    
+
     This handles account-specific patterns like:
     - Mask symbols: "Blue Cash Everday ••1234" -> "Blue Cash Everday"
     - Special characters: "Blue Cash Everyday®" -> "Blue Cash Everyday"
     - Capitalization: "GO GREEN CHECKING" -> "Go Green Checking"
-    
+
     Args:
         account_name: Raw account name from Plaid
-        
+
     Returns:
         Normalized account name
     """
     if not account_name:
-        return ''
-    
+        return ""
+
     # Remove mask patterns like ••1234, ****1234, etc.
-    normalized = re.sub(r' [•*]+\d+', '', account_name)
-    
+    normalized = re.sub(r" [•*]+\d+", "", account_name)
+
     # Also handle patterns like (1234) or [1234]
-    normalized = re.sub(r'[\(\[]\d+[\)\]]', '', normalized)
-    
+    normalized = re.sub(r"[\(\[]\d+[\)\]]", "", normalized)
+
     # Remove special characters like ®, ℠, etc.
-    normalized = re.sub(r'[®℠™]', '', normalized)
-    
+    normalized = re.sub(r"[®℠™]", "", normalized)
+
     # Clean up any trailing spaces and extra whitespace
-    normalized = re.sub(r'\s+', ' ', normalized).strip()
-    
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
     # Apply title case for proper capitalization
     normalized = title_case(normalized)
-    
+
     return normalized
+
 
 # ─── Account Balances Sheet ─────────────────────────────────────────────────────
 
 ACCOUNT_BALANCES_HEADERS = [
-    'Date',
-    'Institution',
-    'Account',
-    'Type',
-    'Current Balance',
-    'Available Balance',
-    'Credit Limit',
-    'Utilization %'
+    "Date",
+    "Institution",
+    "Account",
+    "Type",
+    "Current Balance",
+    "Available Balance",
+    "Credit Limit",
+    "Utilization %",
 ]
 
 
-def build_account_balances_rows(balances: List[dict]) -> List[List[object]]:
+def build_account_balances_rows(balances: list[dict]) -> list[list[object]]:
     """
     Build rows for the Account Balances sheet.
 
@@ -602,60 +648,62 @@ def build_account_balances_rows(balances: List[dict]) -> List[List[object]]:
     if not balances:
         return [ACCOUNT_BALANCES_HEADERS]
 
-    rows: List[List[object]] = [ACCOUNT_BALANCES_HEADERS]
+    rows: list[list[object]] = [ACCOUNT_BALANCES_HEADERS]
 
     total_assets = 0.0
     total_liabilities = 0.0
 
     for balance in balances:
-        current_balance = balance.get('current_balance', 0) or 0
-        available_balance = balance.get('available_balance') or 0
-        credit_limit = balance.get('credit_limit') or 0
-        account_type = balance.get('account_type', '')
-        
+        current_balance = balance.get("current_balance", 0) or 0
+        available_balance = balance.get("available_balance") or 0
+        credit_limit = balance.get("credit_limit") or 0
+        account_type = balance.get("account_type", "")
+
         # Format with proper capitalization
-        institution = title_case(balance.get('institution', ''))
-        account_name = normalize_account_name(balance.get('account_name', ''))
+        institution = title_case(balance.get("institution", ""))
+        account_name = normalize_account_name(balance.get("account_name", ""))
         formatted_type = capitalize_first(account_type)
 
         # Calculate utilization for credit cards
-        utilization = ''
-        if account_type == 'credit' and credit_limit and credit_limit > 0:
+        utilization = ""
+        if account_type == "credit" and credit_limit and credit_limit > 0:
             utilization = f"{(current_balance / credit_limit) * 100:.1f}%"
 
-        rows.append([
-            balance.get('snapshot_date', ''),
-            institution,
-            account_name,
-            formatted_type,
-            current_balance,
-            available_balance,
-            credit_limit,
-            utilization,
-        ])
+        rows.append(
+            [
+                balance.get("snapshot_date", ""),
+                institution,
+                account_name,
+                formatted_type,
+                current_balance,
+                available_balance,
+                credit_limit,
+                utilization,
+            ]
+        )
 
         # Accumulate totals
-        if account_type in ('depository', 'investment'):
+        if account_type in ("depository", "investment"):
             total_assets += current_balance
-        elif account_type in ('credit', 'loan'):
+        elif account_type in ("credit", "loan"):
             total_liabilities += current_balance
 
     # Add summary rows
     net_worth = total_assets - total_liabilities
     rows.append([])  # Empty row for spacing
-    rows.append(['', '', '', 'Total Assets', total_assets, '', '', ''])
-    rows.append(['', '', '', 'Total Liabilities', total_liabilities, '', '', ''])
-    rows.append(['', '', '', 'Net Worth', net_worth, '', '', ''])
+    rows.append(["", "", "", "Total Assets", total_assets, "", "", ""])
+    rows.append(["", "", "", "Total Liabilities", total_liabilities, "", "", ""])
+    rows.append(["", "", "", "Net Worth", net_worth, "", "", ""])
 
     return rows
 
 
 # ─── Net Worth History Sheet ────────────────────────────────────────────────────
 
-NET_WORTH_HEADERS = ['Date', 'Assets', 'Liabilities', 'Net Worth']
+NET_WORTH_HEADERS = ["Date", "Assets", "Liabilities", "Net Worth"]
 
 
-def build_net_worth_rows(net_worth_history: List[dict]) -> List[List[object]]:
+def build_net_worth_rows(net_worth_history: list[dict]) -> list[list[object]]:
     """
     Build rows for the Net Worth History sheet.
 
@@ -668,42 +716,49 @@ def build_net_worth_rows(net_worth_history: List[dict]) -> List[List[object]]:
     if not net_worth_history:
         return [NET_WORTH_HEADERS]
 
-    rows: List[List[object]] = [NET_WORTH_HEADERS]
+    rows: list[list[object]] = [NET_WORTH_HEADERS]
 
     for entry in net_worth_history:
-        rows.append([
-            entry.get('snapshot_date', ''),
-            entry.get('assets', 0) or 0,
-            entry.get('liabilities', 0) or 0,
-            entry.get('net_worth', 0) or 0,
-        ])
+        rows.append(
+            [
+                entry.get("snapshot_date", ""),
+                entry.get("assets", 0) or 0,
+                entry.get("liabilities", 0) or 0,
+                entry.get("net_worth", 0) or 0,
+            ]
+        )
 
     return rows
 
 
 # ─── Google Sheets Integration ─────────────────────────────────────────────────
 
+
 def _get_client():
     """Authenticate with Google Sheets using the service account JSON file."""
     if gspread is None or Credentials is None:
-        raise RuntimeError('gspread and google-auth are required for Google Sheets export')
+        raise RuntimeError(
+            "gspread and google-auth are required for Google Sheets export"
+        )
 
     credentials_path = GOOGLE_SHEETS_CREDENTIALS_PATH
     if not credentials_path.exists():
-        raise FileNotFoundError(f'Google credentials file not found: {credentials_path}')
+        raise FileNotFoundError(
+            f"Google credentials file not found: {credentials_path}"
+        )
 
     scope = [
-        'https://www.googleapis.com/auth/spreadsheets',
-        'https://www.googleapis.com/auth/drive',
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
     ]
     creds = Credentials.from_service_account_file(str(credentials_path), scopes=scope)
     return gspread.authorize(creds)
 
 
-def write_rows_to_sheet(worksheet, rows: List[List[object]]) -> None:
+def write_rows_to_sheet(worksheet, rows: list[list[object]]) -> None:
     """Replace the worksheet contents with the provided rows."""
     worksheet.clear()
-    worksheet.update('A1', rows)
+    worksheet.update("A1", rows)
 
 
 def create_net_worth_chart(worksheet, data_rows: int) -> None:
@@ -720,11 +775,13 @@ def create_net_worth_chart(worksheet, data_rows: int) -> None:
         # Note: Full chart creation via API is complex and may require additional
         # permissions. For now, we log that chart creation would happen here.
         # The data is written to the sheet, so users can manually create charts.
-        logger.debug("Chart creation via API is complex - data written to sheet for manual chart creation.")
-        
+        logger.debug(
+            "Chart creation via API is complex - data written to sheet for manual chart creation."
+        )
+
         # Future implementation could use the Google Sheets API charts endpoint
         # This would require additional error handling and permissions
-        
+
     except Exception as e:
         logger.warning(f"Failed to create net worth chart: {e}")
 
@@ -752,8 +809,10 @@ def export_to_sheets(dry_run: bool = DRY_RUN) -> dict:
         Exception: On Google Sheets API errors (logged and re-raised).
     """
     if not GOOGLE_SHEETS_ENABLED:
-        logger.info("Google Sheets export disabled via config — skipping balance export.")
-        return {'account_balances': 0, 'net_worth_history': 0}
+        logger.info(
+            "Google Sheets export disabled via config — skipping balance export."
+        )
+        return {"account_balances": 0, "net_worth_history": 0}
 
     if dry_run:
         logger.info("[DRY RUN] Would export balance data to Google Sheets.")
@@ -762,7 +821,7 @@ def export_to_sheets(dry_run: bool = DRY_RUN) -> dict:
         net_worth = get_net_worth_history()
         logger.info(f"  [DRY RUN] Account Balances: {len(balances)} account(s)")
         logger.info(f"  [DRY RUN] Net Worth History: {len(net_worth)} date(s)")
-        return {'account_balances': len(balances), 'net_worth_history': len(net_worth)}
+        return {"account_balances": len(balances), "net_worth_history": len(net_worth)}
 
     logger.info("Exporting balance data to Google Sheets...")
 
@@ -772,7 +831,7 @@ def export_to_sheets(dry_run: bool = DRY_RUN) -> dict:
 
     if not balances and not net_worth:
         logger.warning("No balance data to export — skipping Google Sheets update.")
-        return {'account_balances': 0, 'net_worth_history': 0}
+        return {"account_balances": 0, "net_worth_history": 0}
 
     # Connect to Google Sheets
     client = _get_client()
@@ -781,29 +840,37 @@ def export_to_sheets(dry_run: bool = DRY_RUN) -> dict:
     # Export Account Balances
     account_balances_rows = build_account_balances_rows(balances)
     try:
-        worksheet = spreadsheet.worksheet('Account Balances')
+        worksheet = spreadsheet.worksheet("Account Balances")
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title='Account Balances', rows=100, cols=20)
+        worksheet = spreadsheet.add_worksheet(
+            title="Account Balances", rows=100, cols=20
+        )
         logger.info("Created new 'Account Balances' worksheet.")
 
     write_rows_to_sheet(worksheet, account_balances_rows)
-    logger.info(f"Updated 'Account Balances' sheet with {len(account_balances_rows) - 1} row(s).")
+    logger.info(
+        f"Updated 'Account Balances' sheet with {len(account_balances_rows) - 1} row(s)."
+    )
 
     # Export Net Worth History
     net_worth_rows = build_net_worth_rows(net_worth)
     try:
-        worksheet = spreadsheet.worksheet('Net Worth History')
+        worksheet = spreadsheet.worksheet("Net Worth History")
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title='Net Worth History', rows=100, cols=10)
+        worksheet = spreadsheet.add_worksheet(
+            title="Net Worth History", rows=100, cols=10
+        )
         logger.info("Created new 'Net Worth History' worksheet.")
 
     write_rows_to_sheet(worksheet, net_worth_rows)
-    logger.info(f"Updated 'Net Worth History' sheet with {len(net_worth_rows) - 1} row(s).")
-    
+    logger.info(
+        f"Updated 'Net Worth History' sheet with {len(net_worth_rows) - 1} row(s)."
+    )
+
     # Apply formatting to the sheet
     data_rows = len(net_worth_rows) - 1  # Exclude header
 
     return {
-        'account_balances': len(account_balances_rows) - 1,
-        'net_worth_history': len(net_worth_rows) - 1,
+        "account_balances": len(account_balances_rows) - 1,
+        "net_worth_history": len(net_worth_rows) - 1,
     }

@@ -12,18 +12,17 @@ transactions in the canonical schema regardless of origin.
 import json
 import logging
 from datetime import date, datetime, timedelta
-from pathlib import Path
 
+from ..api import plaid_integration
 from ..core.config import (
     INITIAL_SYNC_LOOKBACK_DAYS,
-    ROLLING_SYNC_DAYS,
     MOCK_JSON_PATH,
     PLAID_FORCE_REFRESH,
+    ROLLING_SYNC_DAYS,
     USE_PLAID,
 )
-from ..api import plaid_integration
-from .database import get_latest_transaction_date_for_institution
 from .connection_recovery import is_login_error, prompt_reconnect
+from .database import get_latest_transaction_date_for_institution
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +41,7 @@ def load_transactions():
 def normalize_transaction(txn: dict) -> dict:
     """
     Convert incoming data into canonical format.
-    
+
     Handles both mock JSON and Plaid API sources, passing through all relevant
     fields. For mock JSON, plaid_category_primary may not be present (uses empty string).
     """
@@ -103,10 +102,7 @@ def _fetch_from_mock_json() -> list[dict]:
     logger.info("Loading mock transactions from JSON...")
     raw = load_transactions()
 
-    normalized = [
-        normalize_transaction(txn)
-        for txn in raw
-    ]
+    normalized = [normalize_transaction(txn) for txn in raw]
 
     logger.info(f"Loaded {len(normalized)} mock transaction(s).")
     return normalized
@@ -124,11 +120,11 @@ def _fetch_from_plaid() -> list[dict]:
            - Existing institution: start_date = (latest date for that institution) - ROLLING_SYNC_DAYS
              This is a short rolling window (default 14 days) that catches
              pending→posted transitions and recent corrections efficiently.
-             
+
              IMPORTANT: This does NOT delete old data from the database. Historical
              transactions are preserved indefinitely. ROLLING_SYNC_DAYS only affects
              how far back we fetch from the Plaid API to check for changes.
-             
+
         2. Fetches transactions from Plaid for [start_date, today]
         3. Resolves account IDs to human-readable account names
         4. Tags each transaction with the institution name
@@ -144,7 +140,9 @@ def _fetch_from_plaid() -> list[dict]:
 
     plaid_profiles = plaid_integration.get_plaid_profiles()
     if not plaid_profiles:
-        logger.warning("No Plaid profiles configured. Returning empty transaction list.")
+        logger.warning(
+            "No Plaid profiles configured. Returning empty transaction list."
+        )
         return []
 
     all_transactions = []
@@ -164,7 +162,15 @@ def _fetch_from_plaid() -> list[dict]:
             f"({profile.env}, {len(access_tokens)} token(s))"
         )
 
-        for institution_name, access_token in access_tokens.items():
+        for institution_name, token_info in access_tokens.items():
+            access_token = (
+                token_info["access_token"]
+                if isinstance(token_info, dict)
+                else token_info
+            )
+            token_source = (
+                token_info.get("source") if isinstance(token_info, dict) else "env"
+            )
             # Allow one reconnect+retry per institution.  The inner loop runs
             # at most twice: attempt 0 (normal), and attempt 1 (after the user
             # re-links via link_setup).  Any non-login error, a second failure,
@@ -172,7 +178,9 @@ def _fetch_from_plaid() -> list[dict]:
             for attempt in range(2):
                 try:
                     if attempt == 0:
-                        logger.info(f"Processing institution: {profile.name}/{institution_name}")
+                        logger.info(
+                            f"Processing institution: {profile.name}/{institution_name} (token_source={token_source})"
+                        )
                     else:
                         logger.info(
                             f"Retrying {profile.name}/{institution_name} "
@@ -193,7 +201,9 @@ def _fetch_from_plaid() -> list[dict]:
                     # deleted. ROLLING_SYNC_DAYS only affects how far back we fetch
                     # from the Plaid API. Manual database edits are preserved.
                     #
-                    latest_db_date = get_latest_transaction_date_for_institution(institution_name)
+                    latest_db_date = get_latest_transaction_date_for_institution(
+                        institution_name
+                    )
 
                     if latest_db_date:
                         # Institution has existing records — use rolling window.
@@ -205,7 +215,9 @@ def _fetch_from_plaid() -> list[dict]:
                         )
                     else:
                         # New institution — fetch full available history.
-                        start_date = end_date - timedelta(days=INITIAL_SYNC_LOOKBACK_DAYS)
+                        start_date = end_date - timedelta(
+                            days=INITIAL_SYNC_LOOKBACK_DAYS
+                        )
                         logger.info(
                             f"  New institution — initial fetch from {start_date} "
                             f"({INITIAL_SYNC_LOOKBACK_DAYS} days back)"
@@ -220,7 +232,7 @@ def _fetch_from_plaid() -> list[dict]:
                     # Get accounts for this institution to build account_id → name lookup
                     accounts = plaid_integration.get_accounts(access_token, profile)
                     account_lookup = {
-                        acct['account_id']: f"{acct['name']} ••{acct['mask']}"
+                        acct["account_id"]: f"{acct['name']} ••{acct['mask']}"
                         for acct in accounts
                     }
 
@@ -238,17 +250,19 @@ def _fetch_from_plaid() -> list[dict]:
 
                     for txn in plaid_transactions:
                         # Replace account_id with human-readable name
-                        account_id = txn.get('account')
+                        account_id = txn.get("account")
                         if account_id in account_lookup:
-                            txn['account'] = account_lookup[account_id]
+                            txn["account"] = account_lookup[account_id]
                         else:
                             # Fallback if lookup fails (shouldn't happen, but be safe)
-                            txn['account'] = account_id
+                            txn["account"] = account_id
 
                         # Tag with institution name
-                        txn['institution'] = institution_name
+                        txn["institution"] = institution_name
 
-                    dates = [txn.get('date') for txn in plaid_transactions if txn.get('date')]
+                    dates = [
+                        txn.get("date") for txn in plaid_transactions if txn.get("date")
+                    ]
                     oldest_date = min(dates) if dates else None
                     newest_date = max(dates) if dates else None
 

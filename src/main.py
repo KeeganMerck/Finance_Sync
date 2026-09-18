@@ -27,16 +27,30 @@ import logging
 import sys
 from datetime import datetime
 
-from .core.config import DRY_RUN, ENABLE_DATABASE, GOOGLE_SHEETS_ENABLED, LOG_PATH, USE_PLAID
-from .modules.sync import fetch_transactions
+from .core.config import (
+    DRY_RUN,
+    ENABLE_DATABASE,
+    GOOGLE_SHEETS_ENABLED,
+    LOG_PATH,
+    USE_PLAID,
+)
+from .modules.balance import export_to_sheets as export_balances_to_sheets
+from .modules.balance import (
+    fetch_balances,
+    fetch_investment_transactions,
+    fetch_investments,
+    fetch_manual_balances,
+    upsert_investment_holdings,
+)
+from .modules.balance import upsert_snapshots as upsert_balance_snapshots
 from .modules.categorizer import categorize_transactions, load_rules
-from .modules.database import get_all_transactions, init_db, upsert_transactions
+from .modules.database import init_db, upsert_transactions
 from .modules.export import run_exports
 from .modules.google_sheets import update_google_sheet
-from .modules.balance import fetch_balances, fetch_manual_balances, upsert_snapshots as upsert_balance_snapshots, export_to_sheets as export_balances_to_sheets, fetch_investments, upsert_investment_holdings, fetch_investment_transactions
-
+from .modules.sync import fetch_transactions
 
 # ─── Logging Configuration ─────────────────────────────────────────────────────
+
 
 def configure_logging() -> None:
     """
@@ -50,16 +64,16 @@ def configure_logging() -> None:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     # Configure stdout to handle UTF-8 on Windows
-    if sys.platform == 'win32':
-        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    if sys.platform == "win32":
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s  %(levelname)-8s  %(name)-20s  %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
+        format="%(asctime)s  %(levelname)-8s  %(name)-20s  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[
-            logging.FileHandler(LOG_PATH, encoding='utf-8'),
+            logging.FileHandler(LOG_PATH, encoding="utf-8"),
             logging.StreamHandler(sys.stdout),
         ],
     )
@@ -67,7 +81,12 @@ def configure_logging() -> None:
 
 # ─── Pipeline ──────────────────────────────────────────────────────────────────
 
-def run_pipeline(enable_sheets: bool = True, sync_transactions: bool = True, sync_investments: bool = True) -> None:
+
+def run_pipeline(
+    enable_sheets: bool = True,
+    sync_transactions: bool = True,
+    sync_investments: bool = True,
+) -> None:
     """
     Execute the full finance sync pipeline end-to-end.
 
@@ -89,7 +108,7 @@ def run_pipeline(enable_sheets: bool = True, sync_transactions: bool = True, syn
     logger = logging.getLogger(__name__)
 
     start_time = datetime.now()
-    separator  = '-' * 60
+    separator = "-" * 60
 
     logger.info(separator)
     logger.info("Finance Sync — Pipeline Start")
@@ -105,14 +124,16 @@ def run_pipeline(enable_sheets: bool = True, sync_transactions: bool = True, syn
     if sync_transactions:
         logger.info("Stage 1/5 — Loading transactions...")
         try:
-            init_db() # Ensure database is initialized before fetching transactions (for incremental sync)
+            init_db()  # Ensure database is initialized before fetching transactions (for incremental sync)
             transactions = fetch_transactions()
         except Exception:
             logger.exception("Fatal: failed to load transactions. Aborting pipeline.")
             sys.exit(1)
 
         if not transactions:
-            logger.warning("No transactions returned by sync layer — pipeline will produce empty exports.")
+            logger.warning(
+                "No transactions returned by sync layer — pipeline will produce empty exports."
+            )
 
         logger.info(f"  Loaded {len(transactions)} transaction(s).")
     else:
@@ -145,16 +166,22 @@ def run_pipeline(enable_sheets: bool = True, sync_transactions: bool = True, syn
         all_balances = plaid_balances + manual_balances
         if all_balances:
             upserted = upsert_balance_snapshots(all_balances)
-            logger.info(f"  Upserted {upserted} total account balance snapshot(s) to SQLite.")
+            logger.info(
+                f"  Upserted {upserted} total account balance snapshot(s) to SQLite."
+            )
 
             # Export to Google Sheets (skipped when enable_sheets=False)
             if enable_sheets:
                 balance_export_summary = export_balances_to_sheets(dry_run=DRY_RUN)
                 logger.info(f"  Balance export: {balance_export_summary}")
             else:
-                logger.info("  Balance Sheets export skipped (sheets disabled for this run).")
+                logger.info(
+                    "  Balance Sheets export skipped (sheets disabled for this run)."
+                )
         else:
-            logger.info("  No balance data (Plaid or manual) — skipping storage and export.")
+            logger.info(
+                "  No balance data (Plaid or manual) — skipping storage and export."
+            )
     except Exception:
         logger.exception(
             "Non-fatal: balance fetch and storage failed. "
@@ -173,7 +200,9 @@ def run_pipeline(enable_sheets: bool = True, sync_transactions: bool = True, syn
             investment_holdings = fetch_investments()
             if investment_holdings:
                 investment_result = upsert_investment_holdings(investment_holdings)
-                logger.info(f"  Upserted {investment_result['written']} investment holding(s) to SQLite.")
+                logger.info(
+                    f"  Upserted {investment_result['written']} investment holding(s) to SQLite."
+                )
             else:
                 logger.info("  No investment holdings found (or Plaid disabled).")
         except Exception:
@@ -181,20 +210,25 @@ def run_pipeline(enable_sheets: bool = True, sync_transactions: bool = True, syn
                 "Non-fatal: investment holdings fetch and storage failed. "
                 "Continuing to transaction categorization stage."
             )
-        
+
         # Stage 1d: Fetch investment transactions for cost basis calculation
         logger.info("Stage 1d/5 — Fetching and storing investment transactions...")
         try:
             from datetime import date, timedelta
+
             from .modules.database import upsert_investment_transactions
-            
+
             end_date = date.today()
             start_date = end_date - timedelta(days=730)  # 2 years of history
-            
-            investment_transactions = fetch_investment_transactions(start_date, end_date)
+
+            investment_transactions = fetch_investment_transactions(
+                start_date, end_date
+            )
             if investment_transactions:
                 tx_result = upsert_investment_transactions(investment_transactions)
-                logger.info(f"  Upserted {tx_result['written']} investment transaction(s) to SQLite.")
+                logger.info(
+                    f"  Upserted {tx_result['written']} investment transaction(s) to SQLite."
+                )
             else:
                 logger.info("  No investment transactions found (or Plaid disabled).")
         except Exception:
@@ -213,10 +247,12 @@ def run_pipeline(enable_sheets: bool = True, sync_transactions: bool = True, syn
     logger.info("Stage 2/5 — Categorizing and normalizing merchants...")
     try:
         rules = load_rules()
-        transactions, categorized_count, uncategorized_count, excluded_count = categorize_transactions(
-            transactions,
-            rules=rules,
-            return_excluded_count=True,
+        transactions, categorized_count, uncategorized_count, excluded_count = (
+            categorize_transactions(
+                transactions,
+                rules=rules,
+                return_excluded_count=True,
+            )
         )
     except Exception:
         logger.exception("Fatal: categorization failed. Aborting pipeline.")
@@ -248,12 +284,8 @@ def run_pipeline(enable_sheets: bool = True, sync_transactions: bool = True, syn
         try:
             init_db()
             upsert_result = upsert_transactions(transactions)
-            logger.info(
-                f"  Written (new or changed) : {upsert_result['written']}"
-            )
-            logger.info(
-                f"  Unchanged (skipped)      : {upsert_result['unchanged']}"
-            )
+            logger.info(f"  Written (new or changed) : {upsert_result['written']}")
+            logger.info(f"  Unchanged (skipped)      : {upsert_result['unchanged']}")
         except Exception:
             logger.exception(
                 "Non-fatal: database write failed. "
@@ -296,7 +328,7 @@ def run_pipeline(enable_sheets: bool = True, sync_transactions: bool = True, syn
     # ── Summary ───────────────────────────────────────────────────────────────
 
     end_time = datetime.now()
-    elapsed  = (end_time - start_time).total_seconds()
+    elapsed = (end_time - start_time).total_seconds()
 
     logger.info(separator)
     logger.info("Finance Sync — Pipeline Complete")
@@ -318,5 +350,5 @@ def run_pipeline(enable_sheets: bool = True, sync_transactions: bool = True, syn
 
 # ─── Entry Point ───────────────────────────────────────────────────────────────
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     run_pipeline()

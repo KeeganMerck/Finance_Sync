@@ -85,20 +85,33 @@ function typeColor(t) {
 }
 
 /* ─── Load current NW data ────────────────────────────────────── */
-Promise.all([
-  fetch('/api/networth/current').then(r => r.json()),
-  fetch('/api/networth/history').then(r => r.json()),
-]).then(([current, history]) => {
-  console.log('Current data:', current);
-  console.log('History data:', history);
-  renderCards(current);
-  renderAccountTable(current);
-  renderAllocationChart(current);
-  renderHistoryChart(history);
-}).catch((error) => {
-  console.error('Error loading net worth data:', error);
-  document.getElementById('nw-cards').innerHTML =
-    '<p class="col-span-3 text-slate-500 text-sm">Could not load net worth data.</p>';
+function loadNetworth(){
+  Promise.all([
+    fetch('/api/networth/current').then(r => r.json()),
+    fetch('/api/networth/history').then(r => r.json()),
+  ]).then(([current, history]) => {
+    renderCards(current);
+    renderAccountTable(current);
+    renderAllocationChart(current);
+    renderHistoryChart(history);
+  }).catch((error) => {
+    console.error('Error loading net worth data:', error);
+    document.getElementById('nw-cards').innerHTML =
+      '<p class="col-span-3 text-slate-500 text-sm">Could not load net worth data.</p>';
+  });
+}
+
+// Initial load
+loadNetworth();
+
+// Refresh when manual snapshots change
+window.addEventListener('app:manualSnapshotUpdated', () => {
+  loadNetworth();
+});
+
+// Refresh when tab becomes visible to ensure calculations are current
+window.addEventListener('app:tabVisible', () => {
+  loadNetworth();
 });
 
 /* ─── Summary cards ──────────────────────────────────────────── */
@@ -231,7 +244,9 @@ function renderAllocationChart(data) {
 
   document.getElementById('donut-nw').textContent = fmtK(net_worth);
 
-  new Chart(document.getElementById('chart-allocation'), {
+  // Destroy previous chart instance if present
+  try { if (window._nwAllocationChart) window._nwAllocationChart.destroy(); } catch(e){}
+  window._nwAllocationChart = new Chart(document.getElementById('chart-allocation'), {
     type: 'doughnut',
     data: {
       labels,
@@ -277,8 +292,18 @@ function renderHistoryChart(history) {
   // Sort by date ascending for the chart
   const sortedHistory = [...history].sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date));
   
+  const toDayNumber = dateString => {
+    const [year, month, day] = dateString.split('-').map(Number);
+    return Date.UTC(year, month - 1, day) / 86400000;
+  };
+  const firstDay = toDayNumber(sortedHistory[0].snapshot_date);
+  const points = sortedHistory.map(h => ({
+    x: toDayNumber(h.snapshot_date) - firstDay,
+    y: h.net_worth,
+    snapshot_date: h.snapshot_date,
+  }));
   const values = sortedHistory.map(h => h.net_worth);
-  const labels = sortedHistory.map(h => h.snapshot_date);
+  const lastDay = points[points.length - 1].x;
   const min = Math.min(...values);
   const max = Math.max(...values);
   const gradient = (ctx) => {
@@ -288,13 +313,14 @@ function renderHistoryChart(history) {
     return g;
   };
 
-  new Chart(document.getElementById('chart-nw-history'), {
+  // Destroy previous history chart instance if present
+  try { if (window._nwHistoryChart) window._nwHistoryChart.destroy(); } catch(e){}
+  window._nwHistoryChart = new Chart(document.getElementById('chart-nw-history'), {
     type: 'line',
     data: {
-      labels: labels,
       datasets: [{
         label: 'Net Worth',
-        data: values,
+        data: points,
         borderColor: '#38bdf8',
         backgroundColor: gradient,
         fill: true,
@@ -311,17 +337,24 @@ function renderHistoryChart(history) {
         tooltip: {
           callbacks: { 
             label: ctx => fmtAmt(ctx.raw),
-            title: ctx => ctx[0].label
+            title: ctx => ctx[0].raw.snapshot_date
           }
         }
       },
       scales: {
         x: { 
           grid: { color: '#1e293b' },
+          type: 'linear',
+          min: 0,
+          max: lastDay,
           ticks: {
             maxTicksLimit: 10,
             maxRotation: 45,
-            minRotation: 45
+            minRotation: 45,
+            callback: value => {
+              const day = new Date((firstDay + Math.round(value)) * 86400000);
+              return day.toISOString().slice(0, 10);
+            }
           }
         },
         y: {

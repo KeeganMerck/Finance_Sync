@@ -522,6 +522,27 @@ function loadTransactions() {
     });
 }
 
+// Ensure heavy data is recently fetched. If the last full sync is older than 12 hours,
+// trigger a background sync so server pulls fresh remote data without blocking the UI.
+function ensureRecentData() {
+  fetch('/api/summary')
+    .then(r => r.json())
+    .then(d => {
+      try {
+        const lastSync = d.last_sync ? new Date(d.last_sync) : null;
+        const twelveHours = 12 * 60 * 60 * 1000;
+        if (!lastSync || (Date.now() - lastSync.getTime()) > twelveHours) {
+          // Start a background sync (server will handle rate-limiting)
+          fetch('/api/sync', { method: 'POST' }).catch(() => {});
+        }
+      } catch (e) { /* ignore */ }
+    }).catch(() => {});
+}
+
+// Run on initial load and when tab becomes visible so heavy data is kept fresh
+ensureRecentData();
+window.addEventListener('app:tabVisible', ensureRecentData);
+
 function loadSavedState() {
   try {
     const savedFilters = localStorage.getItem('transactionFilters');
@@ -1367,22 +1388,85 @@ function applyCreateRule() {
     body: JSON.stringify(ruleData)
   })
   .then(response => response.json())
-  .then(data => {
+  .then(async (data) => {
     if (data.success) {
       statusDiv.textContent = 'Rule created successfully!';
       statusDiv.classList.remove('hidden');
       statusDiv.classList.remove('text-red-400');
       statusDiv.classList.add('text-emerald-400');
-      
-      setTimeout(() => {
-        closeCreateRuleModal();
-      }, 1500);
-    } else {
-      statusDiv.textContent = 'Failed to create rule: ' + data.error;
-      statusDiv.classList.remove('hidden');
-      statusDiv.classList.remove('text-emerald-400');
-      statusDiv.classList.add('text-red-400');
+      setTimeout(() => { closeCreateRuleModal(); }, 1500);
+      return;
     }
+
+    // Handle diagnostics returned from server
+    if (data.diagnostics) {
+      const d = data.diagnostics;
+      if (d.duplicate) {
+        alert('A matching rule already exists (id: ' + (d.existing_index ?? '?') + ').');
+        return;
+      }
+
+      if (d.unreachable) {
+        const matchedCount = d.matched_count || 0;
+        const already = d.already_captured_count || 0;
+        const msg = matchedCount === 0
+          ? 'This rule would not match any current transactions.'
+          : `This rule would match ${matchedCount} transactions, but ${already} are already captured by earlier rules.`;
+
+        // If server offered a suggested insertion point, ask user
+        if (d.suggest_insert_before !== undefined) {
+          const insert = confirm(msg + '\n\nInsert the new rule above the conflicting rule to make it take effect? (OK = Insert, Cancel = Ask for other options)');
+          if (insert) {
+            ruleData.insert_before_id = d.suggest_insert_before;
+            // re-send with insertion
+            const resp = await fetch('/api/rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ruleData) });
+            const jr = await resp.json();
+            if (jr.success) { statusDiv.textContent = 'Rule created and inserted successfully!'; statusDiv.classList.remove('hidden'); statusDiv.classList.add('text-emerald-400'); setTimeout(() => closeCreateRuleModal(), 1500); }
+            else { alert('Failed to insert rule: ' + (jr.error || 'Unknown')); }
+            return;
+          }
+
+          // Offer create anyway
+          if (confirm(msg + '\n\nCreate this rule anyway?')) {
+            ruleData.force = true;
+            const resp2 = await fetch('/api/rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ruleData) });
+            const jr2 = await resp2.json();
+            if (jr2.success) { statusDiv.textContent = 'Rule created (forced).'; statusDiv.classList.remove('hidden'); statusDiv.classList.add('text-emerald-400'); setTimeout(() => closeCreateRuleModal(), 1500); }
+            else { alert('Failed to create rule: ' + (jr2.error || 'Unknown')); }
+            return;
+          }
+
+          // otherwise user cancelled
+          statusDiv.textContent = 'Rule creation cancelled.';
+          statusDiv.classList.remove('hidden');
+          statusDiv.classList.remove('text-emerald-400');
+          statusDiv.classList.add('text-red-400');
+          return;
+        }
+
+        // No suggested insertion point — ask to force-create or cancel
+        if (confirm(msg + '\n\nCreate this rule anyway?')) {
+          ruleData.force = true;
+          const resp3 = await fetch('/api/rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ruleData) });
+          const jr3 = await resp3.json();
+          if (jr3.success) { statusDiv.textContent = 'Rule created (forced).'; statusDiv.classList.remove('hidden'); statusDiv.classList.add('text-emerald-400'); setTimeout(() => closeCreateRuleModal(), 1500); }
+          else { alert('Failed to create rule: ' + (jr3.error || 'Unknown')); }
+          return;
+        }
+
+        statusDiv.textContent = 'Rule creation cancelled.';
+        statusDiv.classList.remove('hidden');
+        statusDiv.classList.remove('text-emerald-400');
+        statusDiv.classList.add('text-red-400');
+        return;
+      }
+    }
+
+    // Fallback: show error
+    statusDiv.textContent = 'Failed to create rule: ' + (data.error || JSON.stringify(data));
+    statusDiv.classList.remove('hidden');
+    statusDiv.classList.remove('text-emerald-400');
+    statusDiv.classList.add('text-red-400');
   })
   .catch(error => {
     statusDiv.textContent = 'Failed to create rule: ' + error;
@@ -1487,9 +1571,11 @@ function confirmExclude() {
 
 function openManualModal() {
   const modal = document.getElementById('manual-modal');
-  document.getElementById('manual-date').value = new Date().toISOString().split('T')[0];
+  // Use local date (YYYY-MM-DD) to avoid UTC rollover issues
+  document.getElementById('manual-date').value = new Date().toLocaleDateString('en-CA');
   document.getElementById('manual-form').reset();
-  document.getElementById('manual-date').value = new Date().toISOString().split('T')[0];
+  // Use local date (YYYY-MM-DD)
+  document.getElementById('manual-date').value = new Date().toLocaleDateString('en-CA');
   modal.classList.remove('hidden');
   modal.classList.add('flex');
 }

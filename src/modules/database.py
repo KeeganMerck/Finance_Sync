@@ -40,111 +40,145 @@ TODO (incremental sync): Add a get_latest_sync_date() helper that returns
 
 import logging
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Generator, Optional
+from zoneinfo import ZoneInfo
 
 from ..core.config import DATABASE_PATH, ENABLE_DATABASE
 
 logger = logging.getLogger(__name__)
 
+EASTERN_TIMEZONE = ZoneInfo("America/New_York")
+
+
+def eastern_today() -> str:
+    """Return today's calendar date in the user's default Eastern timezone."""
+    return datetime.now(EASTERN_TIMEZONE).date().isoformat()
+
+
+def normalize_snapshot_date(value: str | date | datetime) -> str:
+    """Normalize a snapshot date or timestamp to an Eastern calendar date."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(EASTERN_TIMEZONE).date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value).strip()
+    if len(text) == 10:
+        date.fromisoformat(text)
+        return text
+    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    return normalize_snapshot_date(parsed)
+
+
+def eastern_now_iso() -> str:
+    """Return an offset-aware Eastern timestamp for app metadata."""
+    return datetime.now(EASTERN_TIMEZONE).isoformat(timespec="seconds")
+
 
 def validate_manual_transaction(transaction: dict) -> tuple[bool, str]:
     """
     Validate a manual transaction before insertion.
-    
+
     Args:
         transaction: Dict with transaction data
-    
+
     Returns:
         (is_valid, error_message)
     """
-    required_fields = ['transaction_id', 'date', 'account', 'amount']
-    
+    required_fields = ["transaction_id", "date", "account", "amount"]
+
     # Check required fields
     for field in required_fields:
         if field not in transaction or not transaction[field]:
             return False, f"Missing required field: {field}"
-    
+
     # Validate date format (YYYY-MM-DD)
-    date = transaction['date']
+    date = transaction["date"]
     try:
         from datetime import datetime
-        datetime.strptime(date, '%Y-%m-%d')
+
+        datetime.strptime(date, "%Y-%m-%d")  # noqa: DTZ007
     except ValueError:
         return False, f"Invalid date format: {date}. Expected YYYY-MM-DD"
-    
+
     # Validate amount is numeric and non-zero
     try:
-        amount = float(transaction['amount'])
+        amount = float(transaction["amount"])
         if abs(amount) < 0.01:  # Allow very small numbers but not exactly zero
             return False, "Amount cannot be zero"
     except (ValueError, TypeError):
         return False, f"Invalid amount: {transaction['amount']}. Must be a number"
-    
+
     # Validate account name is not empty
-    if not transaction['account'].strip():
+    if not transaction["account"].strip():
         return False, "Account name cannot be empty"
-    
+
     # Validate description length
-    if 'description' in transaction and transaction['description']:
-        if len(transaction['description']) > 500:
-            return False, "Description too long (max 500 characters)"
-    
+    if transaction.get("description") and len(transaction["description"]) > 500:
+        return False, "Description too long (max 500 characters)"
+
     # Validate category length
-    if 'category' in transaction and transaction['category']:
-        if len(transaction['category']) > 100:
-            return False, "Category too long (max 100 characters)"
-    
+    if transaction.get("category") and len(transaction["category"]) > 100:
+        return False, "Category too long (max 100 characters)"
+
     return True, ""
 
 
 def validate_manual_account_snapshot(snapshot: dict) -> tuple[bool, str]:
     """
     Validate a manual account snapshot before insertion.
-    
+
     Args:
         snapshot: Dict with snapshot data
-    
+
     Returns:
         (is_valid, error_message)
     """
-    required_fields = ['account_id', 'snapshot_date', 'account_type', 'current_balance']
-    
+    required_fields = ["account_id", "snapshot_date", "account_type", "current_balance"]
+
     # Check required fields
     for field in required_fields:
         if field not in snapshot or not snapshot[field]:
             return False, f"Missing required field: {field}"
-    
+
     # Validate date format (YYYY-MM-DD)
-    date = snapshot['snapshot_date']
+    date = snapshot["snapshot_date"]
     try:
         from datetime import datetime
-        datetime.strptime(date, '%Y-%m-%d')
+
+        datetime.strptime(date, "%Y-%m-%d")  # noqa: DTZ007
     except ValueError:
         return False, f"Invalid date format: {date}. Expected YYYY-MM-DD"
-    
+
     # Validate account type
-    valid_account_types = ['depository', 'credit', 'investment', 'loan', 'brokerage']
-    if snapshot['account_type'].lower() not in valid_account_types:
-        return False, f"Invalid account type: {snapshot['account_type']}. Must be one of: {', '.join(valid_account_types)}"
-    
+    valid_account_types = ["depository", "credit", "investment", "loan", "brokerage"]
+    if snapshot["account_type"].lower() not in valid_account_types:
+        return (
+            False,
+            f"Invalid account type: {snapshot['account_type']}. Must be one of: {', '.join(valid_account_types)}",
+        )
+
     # Validate balance is numeric
     try:
-        balance = float(snapshot['current_balance'])
+        float(snapshot["current_balance"])
     except (ValueError, TypeError):
-        return False, f"Invalid balance: {snapshot['current_balance']}. Must be a number"
-    
+        return (
+            False,
+            f"Invalid balance: {snapshot['current_balance']}. Must be a number",
+        )
+
     # Validate account name length
-    if 'account_name' in snapshot and snapshot['account_name']:
-        if len(snapshot['account_name']) > 100:
-            return False, "Account name too long (max 100 characters)"
-    
+    if snapshot.get("account_name") and len(snapshot["account_name"]) > 100:
+        return False, "Account name too long (max 100 characters)"
+
     # Validate institution length
-    if 'institution' in snapshot and snapshot['institution']:
-        if len(snapshot['institution']) > 100:
-            return False, "Institution name too long (max 100 characters)"
-    
+    if snapshot.get("institution") and len(snapshot["institution"]) > 100:
+        return False, "Institution name too long (max 100 characters)"
+
     return True, ""
 
 
@@ -263,6 +297,15 @@ _CREATE_NET_WORTH_HISTORY_TABLE = """
     );
 """
 
+
+# Simple app-level key/value table for small notifications (last update timestamps)
+_CREATE_APP_STATE_TABLE = """
+    CREATE TABLE IF NOT EXISTS app_state (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    );
+"""
+
 _CREATE_MANUAL_TRANSACTIONS_TABLE = """
     CREATE TABLE IF NOT EXISTS manual_transactions (
         transaction_id TEXT PRIMARY KEY,
@@ -302,7 +345,9 @@ _CREATE_INVESTMENT_BASIS_INDEX = """
 _CREATE_PLAID_TOKENS_TABLE = """
     CREATE TABLE IF NOT EXISTS plaid_tokens (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        institution_name TEXT NOT NULL UNIQUE,
+        profile_name TEXT NOT NULL DEFAULT 'PRIMARY',
+        profile_prefix TEXT NOT NULL DEFAULT 'PLAID',
+        institution_name TEXT NOT NULL,
         access_token TEXT NOT NULL,
         item_id TEXT,
         environment TEXT DEFAULT 'production',
@@ -312,7 +357,107 @@ _CREATE_PLAID_TOKENS_TABLE = """
     );
 """
 
+
+# Investment holdings table and indexes (basic schema)
+_CREATE_INVESTMENT_HOLDINGS_TABLE = """
+    CREATE TABLE IF NOT EXISTS investment_holdings (
+        security_id TEXT PRIMARY KEY,
+        account_id TEXT,
+        symbol TEXT,
+        name TEXT,
+        quantity REAL,
+        current_value REAL,
+        total_cost REAL,
+        cost_basis REAL,
+        last_updated TEXT
+    );
+"""
+
+_CREATE_INVESTMENTS_ACCOUNT_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investments_account
+    ON investment_holdings(account_id);
+"""
+
+_CREATE_INVESTMENTS_DATE_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investments_last_updated
+    ON investment_holdings(last_updated);
+"""
+
+_CREATE_INVESTMENTS_SYMBOL_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investments_symbol
+    ON investment_holdings(symbol);
+"""
+
+# Investment holdings history
+_CREATE_INVESTMENT_HOLDINGS_HISTORY_TABLE = """
+    CREATE TABLE IF NOT EXISTS investment_holdings_history (
+        history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        security_id TEXT,
+        snapshot_date TEXT,
+        quantity REAL,
+        current_value REAL,
+        total_cost REAL,
+        symbol TEXT,
+        institution TEXT
+    );
+"""
+
+_CREATE_INVESTMENTS_HISTORY_DATE_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investments_history_date
+    ON investment_holdings_history(snapshot_date);
+"""
+
+_CREATE_INVESTMENTS_HISTORY_HOLDING_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investments_history_holding
+    ON investment_holdings_history(security_id);
+"""
+
+_CREATE_INVESTMENTS_HISTORY_SYMBOL_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investments_history_symbol
+    ON investment_holdings_history(symbol);
+"""
+
+_CREATE_INVESTMENTS_HISTORY_UNIQUE_INDEX = """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_investments_history_unique
+    ON investment_holdings_history(snapshot_date, security_id);
+"""
+
+# Investment transactions
+_CREATE_INVESTMENT_TRANSACTIONS_TABLE = """
+    CREATE TABLE IF NOT EXISTS investment_transactions (
+        transaction_id TEXT PRIMARY KEY,
+        date TEXT,
+        account_id TEXT,
+        security_id TEXT,
+        symbol TEXT,
+        quantity REAL,
+        amount REAL,
+        fees REAL
+    );
+"""
+
+_CREATE_INVESTMENT_TRANSACTIONS_DATE_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investment_transactions_date
+    ON investment_transactions(date);
+"""
+
+_CREATE_INVESTMENT_TRANSACTIONS_ACCOUNT_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investment_transactions_account
+    ON investment_transactions(account_id);
+"""
+
+_CREATE_INVESTMENT_TRANSACTIONS_SECURITY_INDEX = """
+    CREATE INDEX IF NOT EXISTS idx_investment_transactions_security
+    ON investment_transactions(security_id);
+"""
+
 _CREATE_PLAID_TOKENS_INDEX = """
+    -- Unique index per profile+institution so the same institution can exist
+    -- under different Plaid profiles (primary vs secondary).
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_plaid_tokens_profile_institution
+    ON plaid_tokens(profile_name, institution_name);
+    
+    -- Non-unique lookup by institution name alone (useful for legacy lookups)
     CREATE INDEX IF NOT EXISTS idx_plaid_tokens_institution
     ON plaid_tokens(institution_name);
 """
@@ -320,8 +465,11 @@ _CREATE_PLAID_TOKENS_INDEX = """
 
 # ─── Connection Management ─────────────────────────────────────────────────────
 
+
 @contextmanager
-def _get_connection(db_path: Path = DATABASE_PATH) -> Generator[sqlite3.Connection, None, None]:
+def _get_connection(
+    db_path: Path = DATABASE_PATH,
+) -> Generator[sqlite3.Connection, None, None]:
     """
     Context manager that yields a configured SQLite connection.
 
@@ -357,6 +505,7 @@ def _get_connection(db_path: Path = DATABASE_PATH) -> Generator[sqlite3.Connecti
 
 # ─── Schema Initialization ─────────────────────────────────────────────────────
 
+
 def init_db(db_path: Path = DATABASE_PATH) -> None:
     """
     Create the database file and schema if they don't already exist.
@@ -370,7 +519,9 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         db_path: Path to the SQLite database file.
     """
     if not ENABLE_DATABASE:
-        logger.info("Database disabled via config (ENABLE_DATABASE=False) — skipping init.")
+        logger.info(
+            "Database disabled via config (ENABLE_DATABASE=False) — skipping init."
+        )
         return
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -386,18 +537,18 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
             conn.execute(_ADD_PLAID_CATEGORY_PRIMARY)
             logger.debug("Added plaid_category_primary column (new schema).")
         except sqlite3.OperationalError as e:
-            if 'duplicate column name' in str(e).lower():
+            if "duplicate column name" in str(e).lower():
                 # Column already exists, no action needed
                 logger.debug("plaid_category_primary column already exists.")
             else:
                 raise
-        
+
         # Migration: Add excluded column if it doesn't exist (for existing DBs)
         try:
             conn.execute(_ADD_EXCLUDED_COLUMN)
             logger.debug("Added excluded column (new schema).")
         except sqlite3.OperationalError as e:
-            if 'duplicate column name' in str(e).lower():
+            if "duplicate column name" in str(e).lower():
                 # Column already exists, no action needed
                 logger.debug("excluded column already exists.")
             else:
@@ -421,6 +572,11 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         # Initialize Plaid tokens table
         init_plaid_tokens(db_path)
 
+        # Initialize app_state table for cross-page notifications
+        init_app_state(db_path)
+
+    # Populate or repair the derived history cache without touching raw tables.
+    recalculate_net_worth_history(db_path=db_path)
     logger.info("Database schema initialized successfully.")
 
 
@@ -485,6 +641,20 @@ def init_net_worth_history(db_path: Path = DATABASE_PATH) -> None:
         conn.execute(_CREATE_NET_WORTH_HISTORY_TABLE)
 
     logger.debug("Net worth history table initialized successfully.")
+
+
+def init_app_state(db_path: Path = DATABASE_PATH) -> None:
+    """
+    Initialize the app_state table used for tiny cross-page notifications.
+    """
+    if not ENABLE_DATABASE:
+        logger.debug("Database disabled — skipping app_state init.")
+        return
+
+    with _get_connection(db_path) as conn:
+        conn.execute(_CREATE_APP_STATE_TABLE)
+
+    logger.debug("App state table initialized successfully.")
 
 
 def init_manual_transactions(db_path: Path = DATABASE_PATH) -> None:
@@ -589,7 +759,9 @@ def init_investment_transactions(db_path: Path = DATABASE_PATH) -> None:
     logger.debug("Investment transactions table initialized successfully.")
 
 
-def upsert_investment_transactions(transactions: list[dict], db_path: Path = DATABASE_PATH) -> dict:
+def upsert_investment_transactions(
+    transactions: list[dict], db_path: Path = DATABASE_PATH
+) -> dict:
     """
     Batch upsert investment transactions into the investment_transactions table.
 
@@ -605,7 +777,9 @@ def upsert_investment_transactions(transactions: list[dict], db_path: Path = DAT
         return {"written": 0, "unchanged": 0, "total": 0}
 
     if not transactions:
-        logger.debug("Empty transaction list — skipping investment transactions upsert.")
+        logger.debug(
+            "Empty transaction list — skipping investment transactions upsert."
+        )
         return {"written": 0, "unchanged": 0, "total": 0}
 
     with _get_connection(db_path) as conn:
@@ -632,26 +806,28 @@ def upsert_investment_transactions(transactions: list[dict], db_path: Path = DAT
                         last_updated = excluded.last_updated
                     """,
                     (
-                        transaction.get('transaction_id'),
-                        transaction.get('account_id'),
-                        transaction.get('institution'),
-                        transaction.get('security_id'),
-                        transaction.get('date'),
-                        transaction.get('datetime'),
-                        transaction.get('name'),
-                        transaction.get('quantity') or 0,
-                        transaction.get('amount') or 0,
-                        transaction.get('price') or 0,
-                        transaction.get('fees') or 0,
-                        transaction.get('type'),
-                        transaction.get('subtype'),
-                        transaction.get('currency', 'USD'),
-                        transaction.get('last_updated')
-                    )
+                        transaction.get("transaction_id"),
+                        transaction.get("account_id"),
+                        transaction.get("institution"),
+                        transaction.get("security_id"),
+                        transaction.get("date"),
+                        transaction.get("datetime"),
+                        transaction.get("name"),
+                        transaction.get("quantity") or 0,
+                        transaction.get("amount") or 0,
+                        transaction.get("price") or 0,
+                        transaction.get("fees") or 0,
+                        transaction.get("type"),
+                        transaction.get("subtype"),
+                        transaction.get("currency", "USD"),
+                        transaction.get("last_updated"),
+                    ),
                 )
                 written += 1
-            except Exception as e:
-                logger.warning(f"Failed to upsert investment transaction {transaction.get('transaction_id')}: {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"Failed to upsert investment transaction {transaction.get('transaction_id')}: {e}"
+                )
 
         total = len(transactions)
         unchanged = 0  # With INSERT OR REPLACE, we consider all as written
@@ -663,7 +839,9 @@ def upsert_investment_transactions(transactions: list[dict], db_path: Path = DAT
     return {"written": written, "unchanged": unchanged, "total": total}
 
 
-def get_investment_transactions(db_path: Path = DATABASE_PATH, start_date: str = None, end_date: str = None) -> list[dict]:
+def get_investment_transactions(
+    db_path: Path = DATABASE_PATH, start_date: str | None = None, end_date: str | None = None
+) -> list[dict]:
     """
     Get investment transactions for analysis.
 
@@ -676,11 +854,13 @@ def get_investment_transactions(db_path: Path = DATABASE_PATH, start_date: str =
         List of transaction dicts ordered by date DESC.
     """
     if not ENABLE_DATABASE:
-        logger.debug("Database disabled — get_investment_transactions returning empty list.")
+        logger.debug(
+            "Database disabled — get_investment_transactions returning empty list."
+        )
         return []
 
     logger.info(f"Fetching investment transactions from database: {db_path}")
-    
+
     query = """
         SELECT 
             transaction_id,
@@ -700,7 +880,7 @@ def get_investment_transactions(db_path: Path = DATABASE_PATH, start_date: str =
             last_updated
         FROM investment_transactions
     """
-    
+
     params = []
     if start_date:
         query += " WHERE date >= ?"
@@ -711,9 +891,9 @@ def get_investment_transactions(db_path: Path = DATABASE_PATH, start_date: str =
     elif end_date:
         query += " WHERE date <= ?"
         params.append(end_date)
-    
+
     query += " ORDER BY date DESC"
-    
+
     with _get_connection(db_path) as conn:
         cursor = conn.execute(query, params)
         rows = cursor.fetchall()
@@ -736,13 +916,15 @@ def calculate_cost_basis_from_transactions(db_path: Path = DATABASE_PATH) -> dic
         Dict mapping security_id to total amount invested (cost basis).
     """
     if not ENABLE_DATABASE:
-        logger.debug("Database disabled — calculate_cost_basis_from_transactions returning empty dict.")
+        logger.debug(
+            "Database disabled — calculate_cost_basis_from_transactions returning empty dict."
+        )
         return {}
 
     logger.info("Calculating total amount invested from transaction history")
-    
+
     amount_invested = {}
-    
+
     with _get_connection(db_path) as conn:
         # Sum all buy transactions by account_id + security_id to preserve per-holding cost basis.
         cursor = conn.execute(
@@ -763,19 +945,19 @@ def calculate_cost_basis_from_transactions(db_path: Path = DATABASE_PATH) -> dic
         rows = cursor.fetchall()
 
         for row in rows:
-            account_id = row['account_id']
-            security_id = row['security_id']
-            total_invested = row['total_invested'] or 0
-            total_quantity = row['total_quantity'] or 0
-            tx_count = row['transaction_count'] or 0
+            account_id = row["account_id"]
+            security_id = row["security_id"]
+            total_invested = row["total_invested"] or 0
+            total_quantity = row["total_quantity"] or 0
+            tx_count = row["transaction_count"] or 0
             holding_id = f"{account_id}_{security_id}"
-            
+
             amount_invested[holding_id] = {
-                'account_id': account_id,
-                'security_id': security_id,
-                'total_invested': total_invested,
-                'total_quantity': total_quantity,
-                'transaction_count': tx_count
+                "account_id": account_id,
+                "security_id": security_id,
+                "total_invested": total_invested,
+                "total_quantity": total_quantity,
+                "transaction_count": tx_count,
             }
 
         # Also account for sell transactions by subtracting from amount invested per holding.
@@ -796,22 +978,26 @@ def calculate_cost_basis_from_transactions(db_path: Path = DATABASE_PATH) -> dic
         sell_rows = cursor.fetchall()
 
         for row in sell_rows:
-            account_id = row['account_id']
-            security_id = row['security_id']
-            total_sold = row['total_sold'] or 0
+            account_id = row["account_id"]
+            security_id = row["security_id"]
+            total_sold = row["total_sold"] or 0
             holding_id = f"{account_id}_{security_id}"
-            
-            if holding_id in amount_invested:
-                amount_invested[holding_id]['total_invested'] -= total_sold
 
-    logger.info(f"Calculated total amount invested for {len(amount_invested)} securities")
+            if holding_id in amount_invested:
+                amount_invested[holding_id]["total_invested"] -= total_sold
+
+    logger.info(
+        f"Calculated total amount invested for {len(amount_invested)} securities"
+    )
     return amount_invested
 
 
-def upsert_investment_holdings_history(holdings: list[dict], db_path: Path = DATABASE_PATH) -> dict:
+def upsert_investment_holdings_history(
+    holdings: list[dict], db_path: Path = DATABASE_PATH
+) -> dict:
     """
     Batch upsert investment holdings into the investment_holdings_history table.
-    
+
     Creates historical snapshots for performance tracking over time.
     Each sync run creates a new snapshot with the current holdings state.
 
@@ -827,7 +1013,9 @@ def upsert_investment_holdings_history(holdings: list[dict], db_path: Path = DAT
         return {"written": 0, "unchanged": 0, "total": 0}
 
     if not holdings:
-        logger.debug("Empty holdings list — skipping investment holdings history upsert.")
+        logger.debug(
+            "Empty holdings list — skipping investment holdings history upsert."
+        )
         return {"written": 0, "unchanged": 0, "total": 0}
 
     with _get_connection(db_path) as conn:
@@ -835,10 +1023,12 @@ def upsert_investment_holdings_history(holdings: list[dict], db_path: Path = DAT
         for holding in holdings:
             try:
                 # Calculate gain/loss metrics
-                current_value = holding.get('current_value') or 0
-                cost_basis = holding.get('cost_basis') or 0
+                current_value = holding.get("current_value") or 0
+                cost_basis = holding.get("cost_basis") or 0
                 gain_loss = current_value - cost_basis
-                gain_loss_percent = (gain_loss / cost_basis * 100) if cost_basis > 0 else 0
+                gain_loss_percent = (
+                    (gain_loss / cost_basis * 100) if cost_basis > 0 else 0
+                )
 
                 conn.execute(
                     """
@@ -861,25 +1051,27 @@ def upsert_investment_holdings_history(holdings: list[dict], db_path: Path = DAT
                         last_updated = excluded.last_updated
                     """,
                     (
-                        holding.get('holding_id'),
-                        holding.get('account_id'),
-                        holding.get('institution'),
-                        holding.get('security_id'),
-                        holding.get('symbol'),
-                        holding.get('name'),
-                        holding.get('quantity') or 0,
-                        holding.get('current_price') or 0,
-                        holding.get('current_value') or 0,
-                        holding.get('cost_basis') or 0,
+                        holding.get("holding_id"),
+                        holding.get("account_id"),
+                        holding.get("institution"),
+                        holding.get("security_id"),
+                        holding.get("symbol"),
+                        holding.get("name"),
+                        holding.get("quantity") or 0,
+                        holding.get("current_price") or 0,
+                        holding.get("current_value") or 0,
+                        holding.get("cost_basis") or 0,
                         gain_loss,
                         gain_loss_percent,
-                        holding.get('snapshot_date'),
-                        holding.get('last_updated')
-                    )
+                        holding.get("snapshot_date"),
+                        holding.get("last_updated"),
+                    ),
                 )
                 written += 1
-            except Exception as e:
-                logger.warning(f"Failed to upsert investment history holding {holding.get('symbol')}: {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"Failed to upsert investment history holding {holding.get('symbol')}: {e}"
+                )
 
         total = len(holdings)
         unchanged = 0  # With INSERT, we consider all as written
@@ -891,7 +1083,9 @@ def upsert_investment_holdings_history(holdings: list[dict], db_path: Path = DAT
     return {"written": written, "unchanged": unchanged, "total": total}
 
 
-def get_investment_holdings_history(db_path: Path = DATABASE_PATH, days: int = 90) -> list[dict]:
+def get_investment_holdings_history(
+    db_path: Path = DATABASE_PATH, days: int = 90
+) -> list[dict]:
     """
     Get historical investment holdings for performance analysis.
 
@@ -903,11 +1097,13 @@ def get_investment_holdings_history(db_path: Path = DATABASE_PATH, days: int = 9
         List of historical holding dicts ordered by snapshot_date DESC.
     """
     if not ENABLE_DATABASE:
-        logger.debug("Database disabled — get_investment_holdings_history returning empty list.")
+        logger.debug(
+            "Database disabled — get_investment_holdings_history returning empty list."
+        )
         return []
 
     logger.info(f"Fetching investment holdings history from database: {db_path}")
-    
+
     with _get_connection(db_path) as conn:
         cursor = conn.execute(
             """
@@ -930,11 +1126,13 @@ def get_investment_holdings_history(db_path: Path = DATABASE_PATH, days: int = 9
             WHERE snapshot_date >= date('now', '-' || ? || ' days')
             ORDER BY snapshot_date DESC, symbol ASC
             """,
-            (days,)
+            (days,),
         )
         rows = cursor.fetchall()
 
-    logger.info(f"Retrieved {len(rows)} historical investment holding(s) from database.")
+    logger.info(
+        f"Retrieved {len(rows)} historical investment holding(s) from database."
+    )
     return [dict(row) for row in rows]
 
 
@@ -958,14 +1156,59 @@ def init_plaid_tokens(db_path: Path = DATABASE_PATH) -> None:
         return
 
     with _get_connection(db_path) as conn:
-        conn.execute(_CREATE_PLAID_TOKENS_TABLE)
-        conn.execute(_CREATE_PLAID_TOKENS_INDEX)
+        # If an older plaid_tokens table exists without `profile_name`, migrate it.
+        cursor = conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='table' AND name='plaid_tokens'"
+        )
+        row = cursor.fetchone()
+        if row:
+            # Inspect columns
+            cols = [
+                r["name"]
+                for r in conn.execute("PRAGMA table_info('plaid_tokens')").fetchall()
+            ]
+            if "profile_name" not in cols:
+                logger.info(
+                    "Migrating existing plaid_tokens table to new schema (adding profile metadata)"
+                )
+                # Rename old table
+                conn.execute("ALTER TABLE plaid_tokens RENAME TO plaid_tokens_old")
+                # Create new table
+                conn.execute(_CREATE_PLAID_TOKENS_TABLE)
+                conn.executescript(_CREATE_PLAID_TOKENS_INDEX)
+                # Copy data from old table; set profile_name/profile_prefix defaults
+                conn.execute(
+                    """
+                    INSERT INTO plaid_tokens (profile_name, profile_prefix, institution_name, access_token, item_id, environment, created_at, last_updated, is_active)
+                    SELECT 'PRIMARY', 'PLAID', institution_name, access_token, item_id, environment, created_at, last_updated, is_active
+                    FROM plaid_tokens_old
+                    """
+                )
+                # Drop old table
+                conn.execute("DROP TABLE IF EXISTS plaid_tokens_old")
+            else:
+                # Table exists and has new schema; ensure indexes exist
+                conn.execute(_CREATE_PLAID_TOKENS_TABLE)
+                conn.executescript(_CREATE_PLAID_TOKENS_INDEX)
+        else:
+            # No table exists yet — create it
+            conn.execute(_CREATE_PLAID_TOKENS_TABLE)
+            conn.executescript(_CREATE_PLAID_TOKENS_INDEX)
 
-    logger.debug("Plaid tokens table initialized successfully.")
+    logger.debug("Plaid tokens table initialized/migrated successfully.")
 
 
-def upsert_plaid_token(institution_name: str, access_token: str, item_id: str = None, 
-                       environment: str = 'production', db_path: Path = DATABASE_PATH) -> bool:
+def upsert_plaid_token(
+    institution_name: str,
+    access_token: str,
+    item_id: str | None = None,
+    environment: str = "production",
+    db_path: Path = DATABASE_PATH,
+    profile_name: str = "PRIMARY",
+    profile_prefix: str = "PLAID",
+    profile_client_id: str | None = None,
+    profile_secret: str | None = None,
+) -> bool:
     """
     Add or update a Plaid access token in the database.
 
@@ -987,26 +1230,37 @@ def upsert_plaid_token(institution_name: str, access_token: str, item_id: str = 
         with _get_connection(db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO plaid_tokens (institution_name, access_token, item_id, environment, last_updated)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(institution_name) DO UPDATE SET
+                INSERT INTO plaid_tokens (profile_name, profile_prefix,
+                                         institution_name, access_token, item_id, environment, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(profile_name, institution_name) DO UPDATE SET
                     access_token = excluded.access_token,
                     item_id = excluded.item_id,
                     environment = excluded.environment,
+                    profile_prefix = excluded.profile_prefix,
                     last_updated = excluded.last_updated,
                     is_active = 1
                 """,
-                (institution_name, access_token, item_id, environment)
+                (
+                    profile_name,
+                    profile_prefix,
+                    institution_name,
+                    access_token,
+                    item_id,
+                    environment,
+                ),
             )
             conn.commit()
         logger.info(f"Plaid token upserted for {institution_name}")
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Failed to upsert Plaid token for {institution_name}: {e}")
         return False
 
 
-def get_plaid_tokens(db_path: Path = DATABASE_PATH, active_only: bool = True) -> list[dict]:
+def get_plaid_tokens(
+    db_path: Path = DATABASE_PATH, active_only: bool = True
+) -> list[dict]:
     """
     Get all Plaid tokens from the database.
 
@@ -1025,15 +1279,15 @@ def get_plaid_tokens(db_path: Path = DATABASE_PATH, active_only: bool = True) ->
         with _get_connection(db_path) as conn:
             if active_only:
                 cursor = conn.execute(
-                    "SELECT institution_name, access_token, item_id, environment, created_at, last_updated FROM plaid_tokens WHERE is_active = 1"
+                    "SELECT profile_name, profile_prefix, institution_name, access_token, item_id, environment, created_at, last_updated FROM plaid_tokens WHERE is_active = 1"
                 )
             else:
                 cursor = conn.execute(
-                    "SELECT institution_name, access_token, item_id, environment, created_at, last_updated, is_active FROM plaid_tokens"
+                    "SELECT profile_name, profile_prefix, institution_name, access_token, item_id, environment, created_at, last_updated, is_active FROM plaid_tokens"
                 )
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Failed to get Plaid tokens: {e}")
         return []
 
@@ -1057,17 +1311,19 @@ def delete_plaid_token(institution_name: str, db_path: Path = DATABASE_PATH) -> 
         with _get_connection(db_path) as conn:
             conn.execute(
                 "UPDATE plaid_tokens SET is_active = 0 WHERE institution_name = ?",
-                (institution_name,)
+                (institution_name,),
             )
             conn.commit()
         logger.info(f"Plaid token deactivated for {institution_name}")
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Failed to delete Plaid token for {institution_name}: {e}")
         return False
 
 
-def migrate_env_tokens_to_db(env_file_path: Path, db_path: Path = DATABASE_PATH) -> dict:
+def migrate_env_tokens_to_db(
+    env_file_path: Path, db_path: Path = DATABASE_PATH
+) -> dict:
     """
     Migrate Plaid tokens from .env file to database.
 
@@ -1080,53 +1336,85 @@ def migrate_env_tokens_to_db(env_file_path: Path, db_path: Path = DATABASE_PATH)
     """
     try:
         from dotenv import load_dotenv
-        
+
         # Load .env file
         load_dotenv(env_file_path)
-        
+
+        # Ensure plaid_tokens table exists before attempting upserts
+        try:
+            init_plaid_tokens(db_path)
+        except Exception:  # noqa: BLE001
+            # If init fails, continue and let upsert errors be handled per-token
+            logger.debug("init_plaid_tokens failed or skipped")
+
         # Get all Plaid tokens from environment
         import os
+
         plaid_tokens = {}
         for key, value in os.environ.items():
-            if key.startswith('PLAID_') and 'TOKEN' in key:
+            if (
+                key.startswith(("PLAID_", "SECONDARY_PLAID"))
+                or key.endswith("_PLAID_TOKEN")
+            ) and "TOKEN" in key:
                 # Extract institution name from key (format: PLAID_PRODUCTION_TOKEN_INSTITUTIONNAME)
-                parts = key.split('_')
-                if len(parts) >= 4 and parts[-1] == 'TOKEN':
-                    institution_name = parts[-2]
-                    environment = parts[1] if parts[1] in ['PRODUCTION', 'SANDBOX'] else 'production'
+                parts = key.split("_")
+                # Determine profile prefix (e.g., 'PLAID' or 'SECONDARY_PLAID')
+                if parts[0] == "SECONDARY" and len(parts) >= 2 and parts[1] == "PLAID":
+                    profile_prefix = "SECONDARY_PLAID"
+                else:
+                    profile_prefix = parts[0]
+
+                # Normalize profile name
+                if profile_prefix == "PLAID":
+                    profile_name = "PRIMARY"
+                elif profile_prefix.endswith("_PLAID"):
+                    profile_name = profile_prefix[:-6]
+                else:
+                    profile_name = profile_prefix
+
+                # institution is last part after TOKEN
+                if len(parts) >= 4 and parts[-2] == "TOKEN":
+                    institution_name = parts[-1]
+                    environment = (
+                        "sandbox" if "sandbox" in key.lower() else "production"
+                    )
                     plaid_tokens[institution_name] = {
-                        'access_token': value,
-                        'environment': environment
+                        "access_token": value,
+                        "environment": environment,
+                        "profile_name": profile_name,
+                        "profile_prefix": profile_prefix,
                     }
-        
+
         migrated_count = 0
         failed_count = 0
-        
+
         for institution_name, token_data in plaid_tokens.items():
             if upsert_plaid_token(
-                institution_name, 
-                token_data['access_token'],
-                environment=token_data['environment'],
-                db_path=db_path
+                institution_name,
+                token_data["access_token"],
+                environment=token_data["environment"],
+                db_path=db_path,
+                profile_name=token_data.get("profile_name", "PRIMARY"),
+                profile_prefix=token_data.get("profile_prefix", "PLAID"),
             ):
                 migrated_count += 1
             else:
                 failed_count += 1
-        
+
         return {
-            'success': True,
-            'migrated': migrated_count,
-            'failed': failed_count,
-            'total': len(plaid_tokens)
+            "success": True,
+            "migrated": migrated_count,
+            "failed": failed_count,
+            "total": len(plaid_tokens),
         }
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Failed to migrate tokens from .env to database: {e}")
         return {
-            'success': False,
-            'error': str(e),
-            'migrated': 0,
-            'failed': 0,
-            'total': 0
+            "success": False,
+            "error": str(e),
+            "migrated": 0,
+            "failed": 0,
+            "total": 0,
         }
 
 
@@ -1142,7 +1430,7 @@ def upsert_manual_transaction(transaction: dict, db_path: Path = DATABASE_PATH) 
     if not ENABLE_DATABASE:
         logger.debug("Database disabled — skipping manual transaction upsert.")
         return
-    
+
     # Validate transaction
     is_valid, error_message = validate_manual_transaction(transaction)
     if not is_valid:
@@ -1175,7 +1463,9 @@ def upsert_manual_transaction(transaction: dict, db_path: Path = DATABASE_PATH) 
     logger.debug(f"Upserted manual transaction: {transaction.get('transaction_id')}")
 
 
-def upsert_investment_holdings(holdings: list[dict], db_path: Path = DATABASE_PATH) -> dict:
+def upsert_investment_holdings(
+    holdings: list[dict], db_path: Path = DATABASE_PATH
+) -> dict:
     """
     Batch upsert investment holdings into the investment_holdings table.
 
@@ -1199,32 +1489,32 @@ def upsert_investment_holdings(holdings: list[dict], db_path: Path = DATABASE_PA
 
     # Calculate total amount invested from transaction history for holdings missing cost_basis
     amount_invested_map = calculate_cost_basis_from_transactions(db_path)
-    
+
     with _get_connection(db_path) as conn:
         written = 0
         unchanged = 0
 
         for holding in holdings:
             # Use calculated amount invested if direct cost_basis is missing
-            account_id = holding.get('account_id')
-            security_id = holding.get('security_id')
+            account_id = holding.get("account_id")
+            security_id = holding.get("security_id")
             holding_id = f"{account_id}_{security_id}"
-            cost_basis = holding.get('cost_basis', 0)
-            
+            cost_basis = holding.get("cost_basis", 0)
+
             if not cost_basis and holding_id in amount_invested_map:
-                cost_basis = amount_invested_map[holding_id]['total_invested']
+                cost_basis = amount_invested_map[holding_id]["total_invested"]
                 logger.debug(
                     f"Using calculated amount invested for {holding_id}: "
                     f"${cost_basis:.2f} ({amount_invested_map[holding_id]['transaction_count']} transactions)"
                 )
             elif not cost_basis and security_id in amount_invested_map:
                 # Fallback for legacy maps keyed by security_id only.
-                cost_basis = amount_invested_map[security_id]['total_invested']
+                cost_basis = amount_invested_map[security_id]["total_invested"]
                 logger.debug(
                     f"Using calculated amount invested for security {security_id}: "
                     f"${cost_basis:.2f} ({amount_invested_map[security_id]['transaction_count']} transactions)"
                 )
-            
+
             # Use INSERT OR REPLACE for simple upsert
             conn.execute(
                 """
@@ -1247,20 +1537,20 @@ def upsert_investment_holdings(holdings: list[dict], db_path: Path = DATABASE_PA
                     snapshot_date = excluded.snapshot_date
                 """,
                 (
-                    holding.get('holding_id'),
-                    holding.get('account_id'),
-                    holding.get('institution'),
-                    holding.get('security_id'),
-                    holding.get('symbol'),
-                    holding.get('name'),
-                    holding.get('quantity') or 0,
-                    holding.get('current_price') or 0,
-                    holding.get('current_value') or 0,
+                    holding.get("holding_id"),
+                    holding.get("account_id"),
+                    holding.get("institution"),
+                    holding.get("security_id"),
+                    holding.get("symbol"),
+                    holding.get("name"),
+                    holding.get("quantity") or 0,
+                    holding.get("current_price") or 0,
+                    holding.get("current_value") or 0,
                     cost_basis,
-                    holding.get('purchase_date'),
-                    holding.get('last_updated'),
-                    holding.get('snapshot_date')
-                )
+                    holding.get("purchase_date"),
+                    holding.get("last_updated"),
+                    holding.get("snapshot_date"),
+                ),
             )
             written += 1
 
@@ -1287,24 +1577,28 @@ def get_investment_holdings(db_path: Path = DATABASE_PATH) -> list[dict]:
     logger.info(f"ENABLE_DATABASE: {ENABLE_DATABASE}")
     logger.info(f"db_path: {db_path}")
     logger.info(f"Database exists: {db_path.exists()}")
-    
+
     if not ENABLE_DATABASE:
-        logger.debug("Database disabled — get_investment_holdings returning empty list.")
+        logger.debug(
+            "Database disabled — get_investment_holdings returning empty list."
+        )
         return []
 
     logger.info(f"Fetching investment holdings from database: {db_path}")
-    
+
     with _get_connection(db_path) as conn:
         # First check if table exists and has data
-        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='investment_holdings'")
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='investment_holdings'"
+        )
         table_exists = cursor.fetchone()
         logger.info(f"investment_holdings table exists: {table_exists is not None}")
-        
+
         if table_exists:
             cursor = conn.execute("SELECT COUNT(*) FROM investment_holdings")
             count = cursor.fetchone()[0]
             logger.info(f"Total investment holdings in database: {count}")
-        
+
         cursor = conn.execute(
             """
             SELECT 
@@ -1343,7 +1637,9 @@ def get_manual_transactions(db_path: Path = DATABASE_PATH) -> list[dict]:
         List of manual transaction dicts ordered by date DESC.
     """
     if not ENABLE_DATABASE:
-        logger.debug("Database disabled — get_manual_transactions returning empty list.")
+        logger.debug(
+            "Database disabled — get_manual_transactions returning empty list."
+        )
         return []
 
     with _get_connection(db_path) as conn:
@@ -1359,7 +1655,9 @@ def get_manual_transactions(db_path: Path = DATABASE_PATH) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def delete_manual_transaction(transaction_id: str, db_path: Path = DATABASE_PATH) -> bool:
+def delete_manual_transaction(
+    transaction_id: str, db_path: Path = DATABASE_PATH
+) -> bool:
     """
     Delete a manual transaction.
 
@@ -1384,13 +1682,15 @@ def delete_manual_transaction(transaction_id: str, db_path: Path = DATABASE_PATH
     return True
 
 
-def recalculate_net_worth_history(from_date: str = None, db_path: Path = DATABASE_PATH) -> None:
+def recalculate_net_worth_history(
+    from_date: str | None = None, db_path: Path = DATABASE_PATH
+) -> dict[str, object]:
     """
     Recalculate net worth history for all dates (or from a specific date forward).
-    
+
     This is called when manual snapshots are added/updated to ensure net worth
     calculations reflect the new balances for all subsequent dates.
-    
+
     Args:
         from_date: Optional date string in YYYY-MM-DD format to start recalculating from.
                    If None, recalculates all history.
@@ -1398,89 +1698,139 @@ def recalculate_net_worth_history(from_date: str = None, db_path: Path = DATABAS
     """
     if not ENABLE_DATABASE:
         logger.debug("Database disabled — skipping net worth history recalculation.")
-        return
+        return {"rows_written": 0, "earliest_date": None, "latest_date": None}
+
+    normalized_from = normalize_snapshot_date(from_date) if from_date else None
+    today = eastern_today()
 
     with _get_connection(db_path) as conn:
-        # Delete existing history that will be recalculated
-        if from_date:
-            conn.execute("DELETE FROM net_worth_history WHERE snapshot_date >= ?", (from_date,))
+        if normalized_from:
+            conn.execute(
+                "DELETE FROM net_worth_history WHERE snapshot_date >= ?",
+                (normalized_from,),
+            )
         else:
             conn.execute("DELETE FROM net_worth_history")
-        
-        # Calculate net worth for each date
-        if from_date:
-            conn.execute(
-                """
-                WITH combined_balances AS (
-                    SELECT 
-                        snapshot_date,
-                        account_type,
-                        current_balance
-                    FROM account_snapshots
-                    WHERE snapshot_date >= ?
-                    
-                    UNION ALL
-                    
-                    SELECT 
-                        snapshot_date,
-                        account_type,
-                        current_balance
-                    FROM manual_account_snapshots
-                    WHERE snapshot_date >= ?
-                )
-                INSERT INTO net_worth_history (snapshot_date, net_worth)
+
+        conn.execute(
+            """
+            WITH all_dates AS (
+                SELECT snapshot_date FROM account_snapshots
+                WHERE snapshot_date <= ?
+                UNION
+                SELECT snapshot_date FROM manual_account_snapshots
+                WHERE snapshot_date <= ?
+            ),
+            dates_to_build AS (
+                SELECT snapshot_date FROM all_dates
+                WHERE (? IS NULL OR snapshot_date >= ?)
+            ),
+            candidates AS (
                 SELECT
-                    snapshot_date,
-                    SUM(CASE
-                        WHEN account_type IN ('depository', 'investment')
-                        THEN COALESCE(current_balance, 0)
-                        WHEN account_type IN ('credit', 'loan')
-                        THEN -COALESCE(current_balance, 0)
-                        ELSE 0
-                    END) as net_worth
-                FROM combined_balances
-                GROUP BY snapshot_date
-                ON CONFLICT(snapshot_date) DO UPDATE SET net_worth = excluded.net_worth
-                """,
-                (from_date, from_date),
-            )
-        else:
-            conn.execute(
-                """
-                WITH combined_balances AS (
-                    SELECT 
-                        snapshot_date,
-                        account_type,
-                        current_balance
-                    FROM account_snapshots
-                    
-                    UNION ALL
-                    
-                    SELECT 
-                        snapshot_date,
-                        account_type,
-                        current_balance
-                    FROM manual_account_snapshots
-                )
-                INSERT INTO net_worth_history (snapshot_date, net_worth)
+                    d.snapshot_date AS effective_date,
+                    m.account_id,
+                    m.account_type,
+                    m.current_balance,
+                    1 AS source_priority,
+                    m.snapshot_date AS source_date
+                FROM dates_to_build d
+                JOIN manual_account_snapshots m
+                  ON m.snapshot_date <= d.snapshot_date
+                UNION ALL
                 SELECT
-                    snapshot_date,
-                    SUM(CASE
-                        WHEN account_type IN ('depository', 'investment')
-                        THEN COALESCE(current_balance, 0)
-                        WHEN account_type IN ('credit', 'loan')
-                        THEN -COALESCE(current_balance, 0)
-                        ELSE 0
-                    END) as net_worth
-                FROM combined_balances
-                GROUP BY snapshot_date
-                ON CONFLICT(snapshot_date) DO UPDATE SET net_worth = excluded.net_worth
-                """
+                    d.snapshot_date AS effective_date,
+                    a.account_id,
+                    a.account_type,
+                    a.current_balance,
+                    0 AS source_priority,
+                    a.snapshot_date AS source_date
+                FROM dates_to_build d
+                JOIN account_snapshots a
+                  ON a.snapshot_date <= d.snapshot_date
+            ),
+            ranked AS (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY effective_date, account_id
+                    ORDER BY source_priority DESC, source_date DESC
+                ) AS row_number
+                FROM candidates
             )
-        
-        conn.commit()
+            INSERT INTO net_worth_history (snapshot_date, net_worth, last_updated)
+            SELECT
+                effective_date,
+                SUM(CASE
+                    WHEN account_type IN ('depository', 'investment', 'brokerage')
+                        THEN COALESCE(current_balance, 0)
+                    WHEN account_type IN ('credit', 'loan')
+                        THEN -COALESCE(current_balance, 0)
+                    ELSE 0
+                END),
+                ?
+            FROM ranked
+            WHERE row_number = 1
+            GROUP BY effective_date
+            ON CONFLICT(snapshot_date) DO UPDATE SET
+                net_worth = excluded.net_worth,
+                last_updated = excluded.last_updated
+            """,
+            (today, today, normalized_from, normalized_from, eastern_now_iso()),
+        )
+        result = conn.execute(
+            """
+            SELECT COUNT(*) AS rows_written,
+                   MIN(snapshot_date) AS earliest_date,
+                   MAX(snapshot_date) AS latest_date
+            FROM net_worth_history
+            """
+        ).fetchone()
 
     logger.debug(f"Net worth history recalculated from {from_date or 'beginning'}.")
+    return dict(result)
+
+
+def get_net_worth_history_status(db_path: Path = DATABASE_PATH) -> dict[str, object]:
+    """Report whether source snapshot dates are represented in the history cache."""
+    if not ENABLE_DATABASE:
+        return {
+            "source_dates": 0,
+            "history_dates": 0,
+            "missing_dates": [],
+            "needs_recalculation": False,
+        }
+
+    today = eastern_today()
+    with _get_connection(db_path) as conn:
+        source = conn.execute(
+            """
+            SELECT DISTINCT snapshot_date
+            FROM (
+                SELECT snapshot_date FROM account_snapshots
+                UNION
+                SELECT snapshot_date FROM manual_account_snapshots
+            )
+            WHERE snapshot_date <= ?
+            ORDER BY snapshot_date
+            """,
+            (today,),
+        ).fetchall()
+        history = conn.execute(
+            """
+            SELECT snapshot_date FROM net_worth_history
+            WHERE snapshot_date <= ?
+            ORDER BY snapshot_date
+            """,
+            (today,),
+        ).fetchall()
+
+    source_dates = {row["snapshot_date"] for row in source}
+    history_dates = {row["snapshot_date"] for row in history}
+    missing_dates = sorted(source_dates - history_dates)
+    return {
+        "source_dates": len(source_dates),
+        "history_dates": len(history_dates),
+        "missing_dates": missing_dates,
+        "needs_recalculation": bool(missing_dates),
+    }
 
 
 # ─── Write Operations ──────────────────────────────────────────────────────────
@@ -1643,6 +1993,7 @@ def upsert_transactions(
 
 # ─── Read Operations ───────────────────────────────────────────────────────────
 
+
 def get_all_transactions(db_path: Path = DATABASE_PATH) -> list[dict]:
     """
     Retrieve all transactions ordered by date descending (most recent first).
@@ -1658,9 +2009,7 @@ def get_all_transactions(db_path: Path = DATABASE_PATH) -> list[dict]:
         return []
 
     with _get_connection(db_path) as conn:
-        cursor = conn.execute(
-            "SELECT * FROM transactions ORDER BY date DESC"
-        )
+        cursor = conn.execute("SELECT * FROM transactions ORDER BY date DESC")
         rows = cursor.fetchall()
 
     logger.debug(f"Retrieved {len(rows)} transaction(s) from database.")
@@ -1670,7 +2019,7 @@ def get_all_transactions(db_path: Path = DATABASE_PATH) -> list[dict]:
 def get_transaction_by_id(
     transaction_id: str,
     db_path: Path = DATABASE_PATH,
-) -> Optional[dict]:
+) -> dict | None:
     """
     Retrieve a single transaction by its unique ID.
 
@@ -1714,7 +2063,9 @@ def get_transactions_by_date_range(
         List of matching transaction dicts, ordered by date descending.
     """
     if not ENABLE_DATABASE:
-        logger.info("Database disabled — get_transactions_by_date_range returning empty list.")
+        logger.info(
+            "Database disabled — get_transactions_by_date_range returning empty list."
+        )
         return []
 
     with _get_connection(db_path) as conn:
@@ -1725,8 +2076,7 @@ def get_transactions_by_date_range(
         rows = cursor.fetchall()
 
     logger.debug(
-        f"Retrieved {len(rows)} transaction(s) "
-        f"between {start_date} and {end_date}."
+        f"Retrieved {len(rows)} transaction(s) " f"between {start_date} and {end_date}."
     )
     return [dict(row) for row in rows]
 
@@ -1781,9 +2131,7 @@ def get_uncategorized_transactions(db_path: Path = DATABASE_PATH) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-
-
-def get_latest_transaction_date(db_path: Path = DATABASE_PATH) -> Optional[str]:
+def get_latest_transaction_date(db_path: Path = DATABASE_PATH) -> str | None:
     """
     Return the ISO 8601 date of the most recent transaction across ALL institutions.
 
@@ -1809,7 +2157,7 @@ def get_latest_transaction_date(db_path: Path = DATABASE_PATH) -> Optional[str]:
 def get_latest_transaction_date_for_institution(
     institution: str,
     db_path: Path = DATABASE_PATH,
-) -> Optional[str]:
+) -> str | None:
     """
     Return the ISO 8601 date of the most recent transaction for a specific institution.
 
@@ -1854,6 +2202,7 @@ def get_latest_transaction_date_for_institution(
 
 # ─── Account Snapshot Operations ──────────────────────────────────────────────────
 
+
 def upsert_snapshots(snapshots: list[dict], db_path: Path = DATABASE_PATH) -> int:
     """
     Batch upsert account balance snapshots to the database.
@@ -1873,18 +2222,40 @@ def upsert_snapshots(snapshots: list[dict], db_path: Path = DATABASE_PATH) -> in
         sqlite3.Error: On database write failures.
     """
     if not ENABLE_DATABASE:
-        logger.debug(f"Database disabled — skipping upsert of {len(snapshots)} snapshot(s).")
+        logger.debug(
+            f"Database disabled — skipping upsert of {len(snapshots)} snapshot(s)."
+        )
         return 0
 
     if not snapshots:
         logger.debug("upsert_snapshots: received empty list — skipping.")
         return 0
 
-    with _get_connection(db_path) as conn:
-        conn.executemany(_UPSERT_SNAPSHOT_SQL, snapshots)
+    normalized = []
+    for snapshot in snapshots:
+        row = dict(snapshot)
+        for field, default in (
+            ("account_name", ""),
+            ("institution", ""),
+            ("account_type", ""),
+            ("account_subtype", ""),
+            ("available_balance", None),
+            ("credit_limit", None),
+            ("currency", "USD"),
+        ):
+            row.setdefault(field, default)
+        row["snapshot_date"] = normalize_snapshot_date(row["snapshot_date"])
+        normalized.append(row)
 
-    logger.debug(f"Upserted {len(snapshots)} account snapshot(s) to SQLite.")
-    return len(snapshots)
+    with _get_connection(db_path) as conn:
+        conn.executemany(_UPSERT_SNAPSHOT_SQL, normalized)
+
+    recalculate_net_worth_history(
+        min(row["snapshot_date"] for row in normalized), db_path
+    )
+
+    logger.debug(f"Upserted {len(normalized)} account snapshot(s) to SQLite.")
+    return len(normalized)
 
 
 def get_latest_balances(db_path: Path = DATABASE_PATH) -> list[dict]:
@@ -1942,7 +2313,9 @@ def get_latest_manual_snapshots(db_path: Path = DATABASE_PATH) -> list[dict]:
         Returns empty list if database is disabled or the table is empty.
     """
     if not ENABLE_DATABASE:
-        logger.debug("Database disabled — get_latest_manual_snapshots returning empty list.")
+        logger.debug(
+            "Database disabled — get_latest_manual_snapshots returning empty list."
+        )
         return []
 
     with _get_connection(db_path) as conn:
@@ -1962,7 +2335,7 @@ def get_latest_manual_snapshots(db_path: Path = DATABASE_PATH) -> list[dict]:
 
     logger.debug(
         f"Retrieved {len(rows)} latest manual account snapshot(s) "
-        f"({len(set(dict(r)['account_id'] for r in rows))} unique account(s))."
+        f"({len({dict(r)['account_id'] for r in rows})} unique account(s))."
     )
     return [dict(row) for row in rows]
 
@@ -2002,9 +2375,7 @@ def get_balance_history(days: int = 90, db_path: Path = DATABASE_PATH) -> list[d
 
 def get_net_worth_history(db_path: Path = DATABASE_PATH) -> list[dict]:
     """
-    Return net worth history from both Plaid and manual snapshots.
-
-    Calculates on the fly to always include the latest manual snapshots.
+    Return the materialized net worth history read model.
 
     Args:
         db_path: Path to the database.
@@ -2019,39 +2390,10 @@ def get_net_worth_history(db_path: Path = DATABASE_PATH) -> list[dict]:
         return []
 
     with _get_connection(db_path) as conn:
-        # Calculate on the fly from both snapshot tables
         cursor = conn.execute(
             """
-            WITH combined_balances AS (
-                SELECT 
-                    snapshot_date,
-                    account_type,
-                    current_balance
-                FROM account_snapshots
-                
-                UNION ALL
-                
-                SELECT 
-                    snapshot_date,
-                    account_type,
-                    current_balance
-                FROM manual_account_snapshots
-            ),
-            daily_net_worth AS (
-                SELECT
-                    snapshot_date,
-                    SUM(CASE
-                        WHEN account_type IN ('depository', 'investment')
-                        THEN COALESCE(current_balance, 0)
-                        WHEN account_type IN ('credit', 'loan')
-                        THEN -COALESCE(current_balance, 0)
-                        ELSE 0
-                    END) as net_worth
-                FROM combined_balances
-                GROUP BY snapshot_date
-            )
             SELECT snapshot_date, net_worth
-            FROM daily_net_worth
+            FROM net_worth_history
             ORDER BY snapshot_date ASC
             """
         )
@@ -2059,10 +2401,62 @@ def get_net_worth_history(db_path: Path = DATABASE_PATH) -> list[dict]:
 
     result = []
     for row in rows:
-        result.append({
-            'snapshot_date': row['snapshot_date'],
-            'net_worth': row['net_worth'] or 0,
-        })
+        result.append(
+            {
+                "snapshot_date": row["snapshot_date"],
+                "net_worth": row["net_worth"] or 0,
+            }
+        )
 
     logger.debug(f"Retrieved net worth history for {len(result)} date(s).")
     return result
+
+
+def get_net_worth_history_summary(
+    points: int = 12, db_path: Path = DATABASE_PATH
+) -> list[dict]:
+    """Return evenly spaced period averages without filling missing dates."""
+    if not ENABLE_DATABASE:
+        return []
+    if points < 1:
+        raise ValueError("points must be at least 1")
+
+    history = get_net_worth_history(db_path)
+    if not history:
+        return []
+
+    history = sorted(history, key=lambda row: row["snapshot_date"])
+    start = date.fromisoformat(history[0]["snapshot_date"])
+    end = date.fromisoformat(history[-1]["snapshot_date"])
+    span_days = (end - start).days + 1
+    bucket_count = min(points, max(1, span_days // 7))
+    buckets = []
+
+    for index in range(bucket_count):
+        bucket_start_offset = (index * span_days) // bucket_count
+        bucket_end_offset = (((index + 1) * span_days) // bucket_count) - 1
+        bucket_start = start + timedelta(days=bucket_start_offset)
+        bucket_end = start + timedelta(days=max(bucket_start_offset, bucket_end_offset))
+        values = []
+        if bucket_end_offset >= bucket_start_offset:
+            values = [
+                row["net_worth"]
+                for row in history
+                if bucket_start.isoformat()
+                <= row["snapshot_date"]
+                <= bucket_end.isoformat()
+            ]
+        buckets.append(
+            {
+                "period_start": bucket_start.isoformat(),
+                "period_end": bucket_end.isoformat(),
+                "label": (
+                    f"{bucket_start.strftime('%b')} {bucket_start.day} - "
+                    f"{bucket_end.strftime('%b')} {bucket_end.day}, {bucket_end.year}"
+                ),
+                "net_worth": round(sum(values) / len(values), 2) if values else None,
+                "sample_count": len(values),
+            }
+        )
+
+    return buckets

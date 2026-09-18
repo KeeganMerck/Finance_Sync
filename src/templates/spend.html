@@ -141,7 +141,8 @@ function navigateToTransactions(category, month) {
   // Calculate first and last day of the month
   const [year, monthNum] = month.split('-');
   const firstDay = `${year}-${monthNum}-01`;
-  const lastDay = new Date(year, monthNum, 0).toISOString().split('T')[0];
+  // Use local date to avoid timezone rollover
+  const lastDay = new Date(year, monthNum, 0).toLocaleDateString('en-CA');
   
   // Navigate to transactions page with filters
   window.location.href = `/transactions?start_date=${firstDay}&end_date=${lastDay}&category=${encodeURIComponent(category)}`;

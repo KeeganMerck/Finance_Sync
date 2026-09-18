@@ -21,22 +21,20 @@ After setup, the regular sync pipeline (main.py) uses these tokens to fetch
 transactions without user interaction.
 """
 
-import json
 import logging
 import os
-from datetime import datetime
-
-from flask import Flask, render_template_string, request, jsonify
 import threading
 
-from .core.config import PLAID_ENV
+from flask import Flask, jsonify, render_template_string, request
+
 from .api import plaid_integration
+from .core.config import PLAID_ENV
 
 # Configure logging for the setup process
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s  %(levelname)-8s  %(name)-20s  %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
+    format="%(asctime)s  %(levelname)-8s  %(name)-20s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
@@ -49,11 +47,11 @@ app = Flask(__name__)
 def _get_requested_profile():
     """Return the Plaid profile requested by query/body, or the default profile."""
     requested_name = None
-    if request.method == 'GET':
-        requested_name = request.args.get('profile')
+    if request.method == "GET":
+        requested_name = request.args.get("profile")
     else:
         payload = request.get_json(silent=True) or {}
-        requested_name = payload.get('profile')
+        requested_name = payload.get("profile")
 
     profiles = plaid_integration.get_plaid_profiles()
     if not profiles:
@@ -64,11 +62,16 @@ def _get_requested_profile():
 
     requested_name = requested_name.strip().upper()
     for profile in profiles:
-        if profile.name.upper() == requested_name or profile.prefix.upper() == requested_name:
+        if (
+            profile.name.upper() == requested_name
+            or profile.prefix.upper() == requested_name
+        ):
             return profile
 
-    raise ValueError(f"Unknown Plaid profile: {requested_name!r}. "
-                     f"Available: {[p.name for p in profiles]}")
+    raise ValueError(
+        f"Unknown Plaid profile: {requested_name!r}. "
+        f"Available: {[p.name for p in profiles]}"
+    )
 
 
 def _find_profile_for_institution(institution_name: str):
@@ -455,13 +458,14 @@ HTML_TEMPLATE = """
 
 # ─── Routes ───────────────────────────────────────────────────────────────
 
-@app.route('/')
+
+@app.route("/")
 def home():
     """Serve the Plaid Link UI page."""
     return render_template_string(HTML_TEMPLATE)
 
 
-@app.route('/link_token', methods=['GET'])
+@app.route("/link_token", methods=["GET"])
 def get_link_token():
     """
     Generate and return a fresh Plaid Link token.
@@ -471,13 +475,13 @@ def get_link_token():
     try:
         profile = _get_requested_profile()
         link_token = plaid_integration.create_link_token(profile=profile)
-        return jsonify({'link_token': link_token})
+        return jsonify({"link_token": link_token})
     except Exception as e:
         logger.exception("Failed to create link token")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/exchange', methods=['POST'])
+@app.route("/exchange", methods=["POST"])
 def exchange_public_token():
     """
     Exchange a public token from Plaid Link for a long-lived access token.
@@ -486,56 +490,61 @@ def exchange_public_token():
     """
     try:
         data = request.get_json() or {}
-        public_token = data.get('public_token')
+        public_token = data.get("public_token")
 
         if not public_token:
-            return jsonify({
-                'success': False,
-                'message': 'No public token provided'
-            }), 400
+            return (
+                jsonify({"success": False, "message": "No public token provided"}),
+                400,
+            )
 
         # Exchange public token for access token
         profile = _get_requested_profile()
-        access_token = plaid_integration.item_public_token_exchange(public_token, profile)
+        access_token = plaid_integration.item_public_token_exchange(
+            public_token, profile
+        )
 
         # Print the access token clearly to the terminal so the user can copy it
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("✓ SUCCESS — New access token obtained:")
-        print("="*70)
+        print("=" * 70)
         print(f"Access Token: {access_token}")
-        print("-"*70)
+        print("-" * 70)
         print("Copy this token and add it to your .env file as:")
         print(f"  {profile.token_prefix}<INSTITUTIONNAME>=<token>")
         print("where <INSTITUTIONNAME> is the name of the bank (e.g., CHASE, AMEX).")
-        print("="*70 + "\n")
+        print("=" * 70 + "\n")
 
-        return jsonify({
-            'success': True,
-            'message': f'Access token obtained for {profile.name}! Check the terminal for details.',
-            'access_token': access_token,  # Also in JSON for reference
-        })
+        return jsonify(
+            {
+                "success": True,
+                "message": f"Access token obtained for {profile.name}! Check the terminal for details.",
+                "access_token": access_token,  # Also in JSON for reference
+            }
+        )
 
     except Exception as e:
         logger.exception("Failed to exchange public token")
-        return jsonify({
-            'success': False,
-            'message': f'Token exchange failed: {str(e)}'
-        }), 500
+        return (
+            jsonify({"success": False, "message": f"Token exchange failed: {e!s}"}),
+            500,
+        )
 
-@app.route('/profiles', methods=['GET'])
+
+@app.route("/profiles", methods=["GET"])
 def get_profiles():
     """Return the list of configured Plaid profile names for the UI dropdown."""
     try:
         profiles = plaid_integration.get_plaid_profiles()
-        return jsonify({
-            'profiles': [{'name': p.name, 'prefix': p.prefix} for p in profiles]
-        })
+        return jsonify(
+            {"profiles": [{"name": p.name, "prefix": p.prefix} for p in profiles]}
+        )
     except Exception as e:
         logger.exception("Failed to load profiles")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/update_all_link_tokens', methods=['POST'])
+@app.route("/update_all_link_tokens", methods=["POST"])
 def generate_all_update_link_tokens():
     """
     Generate Plaid Link tokens in UPDATE mode for every institution across
@@ -546,25 +555,27 @@ def generate_all_update_link_tokens():
     client ID / secret it belongs to.
     """
     try:
-        from plaid.model.link_token_create_request import LinkTokenCreateRequest
-        from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
-        from plaid.model.products import Products
         from plaid.model.country_code import CountryCode
+        from plaid.model.link_token_create_request import LinkTokenCreateRequest
+        from plaid.model.link_token_create_request_user import (
+            LinkTokenCreateRequestUser,
+        )
+        from plaid.model.products import Products
 
         profiles = plaid_integration.get_plaid_profiles()
         if not profiles:
-            return jsonify({
-                'success': False,
-                'message': 'No Plaid profiles configured.'
-            }), 404
+            return (
+                jsonify({"success": False, "message": "No Plaid profiles configured."}),
+                404,
+            )
 
-        update_tokens = {}   # institution_name → link_token (or ERROR string)
+        update_tokens = {}  # institution_name → link_token (or ERROR string)
         total_found = 0
 
         for profile in profiles:
             # Collect all access tokens belonging to this profile
             profile_tokens = {
-                key[len(profile.token_prefix):]: value
+                key[len(profile.token_prefix) :]: value
                 for key, value in os.environ.items()
                 if key.startswith(profile.token_prefix) and value
             }
@@ -584,24 +595,28 @@ def generate_all_update_link_tokens():
                 label = f"{profile.name}/{institution_name}"
                 try:
                     link_request = LinkTokenCreateRequest(
-                        user=LinkTokenCreateRequestUser(client_user_id='finance_sync_user'),
-                        client_name='Finance Sync',
-                        language='en',
-                        country_codes=[CountryCode('US')],
+                        user=LinkTokenCreateRequestUser(
+                            client_user_id="finance_sync_user"
+                        ),
+                        client_name="Finance Sync",
+                        language="en",
+                        country_codes=[CountryCode("US")],
                         access_token=existing_access_token,
                         additional_consented_products=[
-                            Products('transactions'),
-                            Products('investments'),  # Add investments to additional consent for updates
+                            Products("transactions"),
+                            Products(
+                                "investments"
+                            ),  # Add investments to additional consent for updates
                         ],
                         transactions={"days_requested": 730},
                         optional_products=[
-                            Products('liabilities'),
-                            Products('identity'),
+                            Products("liabilities"),
+                            Products("identity"),
                         ],
                     )
                     response = client.link_token_create(link_request)
                     token_val = (
-                        response.get('link_token')
+                        response.get("link_token")
                         if isinstance(response, dict)
                         else response.link_token
                     )
@@ -610,37 +625,46 @@ def generate_all_update_link_tokens():
 
                 except Exception as e:
                     logger.error(f"Failed to generate update token for {label}: {e}")
-                    update_tokens[label] = f"ERROR: {str(e)}"
+                    update_tokens[label] = f"ERROR: {e!s}"
 
         if not update_tokens:
-            return jsonify({
-                'success': False,
-                'message': 'No access tokens found across any configured profile.'
-            }), 404
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": "No access tokens found across any configured profile.",
+                    }
+                ),
+                404,
+            )
 
         successful_count = sum(
-            1 for t in update_tokens.values() if not str(t).startswith('ERROR')
+            1 for t in update_tokens.values() if not str(t).startswith("ERROR")
         )
         print(
             f"\n✓ Generated {successful_count}/{total_found} update link tokens "
             f"across {len(profiles)} profile(s)"
         )
-        return jsonify({
-            'success': True,
-            'update_tokens': update_tokens,
-            'total': total_found,
-            'successful': successful_count,
-        })
+        return jsonify(
+            {
+                "success": True,
+                "update_tokens": update_tokens,
+                "total": total_found,
+                "successful": successful_count,
+            }
+        )
 
     except Exception as e:
         logger.exception("Failed to generate all update link tokens")
-        return jsonify({
-            'success': False,
-            'message': f'Bulk update setup failed: {str(e)}'
-        }), 500
+        return (
+            jsonify(
+                {"success": False, "message": f"Bulk update setup failed: {e!s}"}
+            ),
+            500,
+        )
 
 
-@app.route('/update_link_token', methods=['POST'])
+@app.route("/update_link_token", methods=["POST"])
 def generate_update_link_token():
     """
     Generate a Plaid Link token in UPDATE mode for a single existing institution.
@@ -651,54 +675,65 @@ def generate_update_link_token():
     """
     try:
         data = request.get_json() or {}
-        institution_name = data.get('institution', '').strip()
+        institution_name = data.get("institution", "").strip()
 
         if not institution_name:
-            return jsonify({
-                'success': False,
-                'message': 'Missing institution name.'
-            }), 400
+            return (
+                jsonify({"success": False, "message": "Missing institution name."}),
+                400,
+            )
 
         # Auto-detect which profile owns this institution's access token.
-        profile, env_key, existing_access_token = _find_profile_for_institution(institution_name)
+        profile, env_key, existing_access_token = _find_profile_for_institution(
+            institution_name
+        )
 
         if not profile:
             all_profiles = plaid_integration.get_plaid_profiles()
             checked = [p.token_prefix + institution_name.upper() for p in all_profiles]
-            return jsonify({
-                'success': False,
-                'message': (
-                    f"No access token found for '{institution_name.upper()}' in any profile. "
-                    f"Checked env keys: {checked}"
-                )
-            }), 404
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": (
+                            f"No access token found for '{institution_name.upper()}' in any profile. "
+                            f"Checked env keys: {checked}"
+                        ),
+                    }
+                ),
+                404,
+            )
 
         logger.info(
             f"Generating update token for {institution_name.upper()} "
             f"using profile '{profile.name}' (env key: {env_key})"
         )
 
-        from plaid.model.link_token_create_request import LinkTokenCreateRequest
-        from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
-        from plaid.model.products import Products
         from plaid.model.country_code import CountryCode
+        from plaid.model.link_token_create_request import LinkTokenCreateRequest
+        from plaid.model.link_token_create_request_user import (
+            LinkTokenCreateRequestUser,
+        )
+        from plaid.model.products import Products
 
         link_request = LinkTokenCreateRequest(
-            user=LinkTokenCreateRequestUser(client_user_id='finance_sync_user'),
-            client_name='Finance Sync',
-            language='en',
-            country_codes=[CountryCode('US')],
+            user=LinkTokenCreateRequestUser(client_user_id="finance_sync_user"),
+            client_name="Finance Sync",
+            language="en",
+            country_codes=[CountryCode("US")],
             access_token=existing_access_token,
             additional_consented_products=[
-                Products('transactions'),
-                Products('investments'),  # Add investments to additional consent for updates
+                Products("transactions"),
+                Products(
+                    "investments"
+                ),  # Add investments to additional consent for updates
             ],
             transactions={"days_requested": 730},
             optional_products=[
-                Products('liabilities'),
-                Products('identity'),
-                Products('signal'),
-                Products('statements'),
+                Products("liabilities"),
+                Products("identity"),
+                Products("signal"),
+                Products("statements"),
             ],
         )
 
@@ -710,24 +745,27 @@ def generate_update_link_token():
             f"(profile: {profile.name})"
         )
 
-        return jsonify({
-            'success': True,
-            'link_token': response.link_token,
-            'is_update': True,
-            'profile': profile.name,
-        })
+        return jsonify(
+            {
+                "success": True,
+                "link_token": response.link_token,
+                "is_update": True,
+                "profile": profile.name,
+            }
+        )
 
     except Exception as e:
         logger.exception("Failed to generate update link token")
-        return jsonify({
-            'success': False,
-            'message': f'Update setup failed: {str(e)}'
-        }), 500
+        return (
+            jsonify({"success": False, "message": f"Update setup failed: {e!s}"}),
+            500,
+        )
 
 
 # ─── Shutdown Route ───────────────────────────────────────────────────────
 
-@app.route('/shutdown', methods=['POST'])
+
+@app.route("/shutdown", methods=["POST"])
 def shutdown():
     """
     Cleanly stop the Flask development server.
@@ -737,22 +775,25 @@ def shutdown():
     thread so Flask can still send back the 200 response before the process
     exits.
     """
+
     def _stop():
         import time as _time
-        _time.sleep(0.5)          # brief pause so the response is delivered
-        os._exit(0)               # hard exit — kills the Flask dev server cleanly
+
+        _time.sleep(0.5)  # brief pause so the response is delivered
+        os._exit(0)  # hard exit — kills the Flask dev server cleanly
 
     threading.Thread(target=_stop, daemon=True).start()
-    return jsonify({'status': 'shutting down'}), 200
+    return jsonify({"status": "shutting down"}), 200
 
 
 # ─── Startup Instructions ─────────────────────────────────────────────────
 
+
 def print_startup_message():
     """Print setup instructions to the terminal when the server starts."""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("Finance Sync — Plaid Link Setup")
-    print("="*70)
+    print("=" * 70)
     print("\nStarting Flask server on http://localhost:5000")
     print("\n📝 Setup Instructions:")
     print("  1. Open http://localhost:5000 in your web browser")
@@ -768,11 +809,11 @@ def print_startup_message():
     print("  - NEVER commit access tokens to version control")
     print("  - Keep your .env file in .gitignore")
     print("  - Store tokens securely and treat them like passwords")
-    print("="*70 + "\n")
+    print("=" * 70 + "\n")
 
 
 # ─── Main Entry Point ──────────────────────────────────────────────────────
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print_startup_message()
     app.run(debug=True, port=5000)

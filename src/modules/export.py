@@ -32,8 +32,8 @@ import csv
 import logging
 from pathlib import Path
 
+from ..core.config import CASH_FLOW_CSV_PATH, DRY_RUN, RAW_CSV_PATH
 from .categorizer import format_category_for_display, resolve_category
-from ..core.config import CASH_FLOW_CSV_PATH, RAW_CSV_PATH, DRY_RUN
 
 logger = logging.getLogger(__name__)
 
@@ -43,32 +43,33 @@ logger = logging.getLogger(__name__)
 # Exact column names expected by the Excel workbook — treat as a contract.
 # Changing these names will break existing workbook formulas and pivot tables.
 CASH_FLOW_COLUMNS: list[str] = [
-    'Date',
-    'Account',
-    'Description',
-    'Category',
-    'Amount',
+    "Date",
+    "Account",
+    "Description",
+    "Category",
+    "Amount",
 ]
 
 # Full canonical schema for raw export. Matches database.py schema exactly.
 # Useful for debugging categorization issues or verifying data integrity.
 RAW_COLUMNS: list[str] = [
-    'transaction_id',
-    'date',
-    'account',
-    'merchant',
-    'description',
-    'plaid_category',
-    'user_category',
-    'amount',
-    'pending',
-    'institution',
-    'last_updated',
-    'excluded',
+    "transaction_id",
+    "date",
+    "account",
+    "merchant",
+    "description",
+    "plaid_category",
+    "user_category",
+    "amount",
+    "pending",
+    "institution",
+    "last_updated",
+    "excluded",
 ]
 
 
 # ─── Row Transformation ────────────────────────────────────────────────────────
+
 
 def _to_cash_flow_row(transaction: dict) -> dict:
     """
@@ -91,17 +92,19 @@ def _to_cash_flow_row(transaction: dict) -> dict:
         Dict with keys matching CASH_FLOW_COLUMNS.
     """
     return {
-        'Date':        transaction.get('date', ''),
-        'Account':     transaction.get('account', ''),
+        "Date": transaction.get("date", ""),
+        "Account": transaction.get("account", ""),
         # Prefer normalized merchant; fall back to raw description
-        'Description': transaction.get('merchant') or transaction.get('description', ''),
+        "Description": transaction.get("merchant")
+        or transaction.get("description", ""),
         # Resolution order: user_category → plaid_category_primary → plaid_category
         # → 'Uncategorized'. 'Uncategorized' only appears in the CSV — the
         # internal data model keeps an empty string so test_database uncategorized
         # queries still work.
-        'Category':    format_category_for_display(resolve_category(transaction)) or 'Uncategorized',
+        "Category": format_category_for_display(resolve_category(transaction))
+        or "Uncategorized",
         # Amount is kept as a raw number — Excel handles display formatting
-        'Amount':      transaction.get('amount', ''),
+        "Amount": transaction.get("amount", ""),
     }
 
 
@@ -118,10 +121,11 @@ def _to_raw_row(transaction: dict) -> dict:
     Returns:
         Dict with only RAW_COLUMNS keys (missing values default to empty string).
     """
-    return {col: transaction.get(col, '') for col in RAW_COLUMNS}
+    return {col: transaction.get(col, "") for col in RAW_COLUMNS}
 
 
 # ─── Export Functions ──────────────────────────────────────────────────────────
+
 
 def export_cash_flow(
     transactions: list[dict],
@@ -143,8 +147,8 @@ def export_cash_flow(
         Number of rows written (or that would have been written in dry run).
     """
     # Filter out excluded transactions before export
-    active_transactions = [t for t in transactions if not t.get('excluded')]
-    
+    active_transactions = [t for t in transactions if not t.get("excluded")]
+
     if not active_transactions:
         logger.warning(
             "export_cash_flow: received empty transaction list after filtering excluded — skipping export."
@@ -166,7 +170,7 @@ def export_cash_flow(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, 'w', newline='', encoding='utf-8') as f:
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CASH_FLOW_COLUMNS)
         writer.writeheader()
         writer.writerows(rows)
@@ -214,11 +218,11 @@ def export_raw_transactions(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, 'w', newline='', encoding='utf-8') as f:
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
             fieldnames=RAW_COLUMNS,
-            extrasaction='ignore',  # Silently drop any unexpected fields
+            extrasaction="ignore",  # Silently drop any unexpected fields
         )
         writer.writeheader()
         writer.writerows([_to_raw_row(t) for t in transactions])
@@ -230,6 +234,7 @@ def export_raw_transactions(
 
 
 # ─── Orchestrated Export ───────────────────────────────────────────────────────
+
 
 def run_exports(
     transactions: list[dict],
@@ -258,12 +263,12 @@ def run_exports(
 
     # Always export the primary Excel-compatible file
     cash_flow_count = export_cash_flow(transactions, dry_run=dry_run)
-    summary['cash_flow_rows'] = cash_flow_count
+    summary["cash_flow_rows"] = cash_flow_count
 
     # Optionally export the full canonical archival file
     if include_raw:
         raw_count = export_raw_transactions(transactions, dry_run=dry_run)
-        summary['raw_rows'] = raw_count
+        summary["raw_rows"] = raw_count
 
     logger.info(f"Export complete. Summary: {summary}")
     return summary

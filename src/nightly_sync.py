@@ -2,7 +2,6 @@
 
 from .sync_job import SyncAlreadyRunning, run_full_sync
 
-
 if __name__ == "__main__":
     try:
         run_full_sync()

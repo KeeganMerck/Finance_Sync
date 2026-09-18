@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+  <h2>Plaid Tokens (Admin)</h2>
+  <div id="message" style="margin-bottom:1rem;color:green"></div>
+  <table id="tokens" class="table">
+    <thead>
+      <tr>
+        <th>Profile</th>
+        <th>Prefix</th>
+        <th>Institution</th>
+        <th>Environment</th>
+        <th>Active</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+async function loadTokens(){
+  const res = await fetch('/api/admin/plaid/tokens');
+  const data = await res.json();
+  const tbody = document.querySelector('#tokens tbody');
+  tbody.innerHTML = '';
+  if(!data.success){
+    document.getElementById('message').textContent = 'Failed to load tokens';
+    return;
+  }
+  data.tokens.forEach(t => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${t.profile_name}</td>
+      <td>${t.profile_prefix}</td>
+      <td>${t.institution_name}</td>
+      <td>${t.environment}</td>
+      <td>${t.is_active ? 'Yes' : 'No'}</td>
+      <td><button class="btn" data-id="${t.id}" data-active="${t.is_active}">${t.is_active ? 'Deactivate' : 'Activate'}</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+  document.querySelectorAll('#tokens button').forEach(btn => btn.addEventListener('click', toggleToken));
+}
+
+async function toggleToken(e){
+  const btn = e.currentTarget;
+  const id = btn.dataset.id;
+  const active = btn.dataset.active === 'true' ? false : true;
+  btn.disabled = true;
+  const res = await fetch(`/api/admin/plaid/tokens/${id}/set_active`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({active})
+  });
+  const data = await res.json();
+  if(data.success){
+    document.getElementById('message').textContent = data.message || 'Updated';
+    await loadTokens();
+  } else {
+    document.getElementById('message').textContent = 'Failed to update token';
+  }
+}
+
+window.addEventListener('load', loadTokens);
+</script>
+{% endblock %}

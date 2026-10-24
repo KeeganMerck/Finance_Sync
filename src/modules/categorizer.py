@@ -255,7 +255,8 @@ def _get_match_targets(
     if rule.match_field == "any":
         merchant = (transaction.get("merchant") or "").strip().upper()
         description = (transaction.get("description") or "").strip().upper()
-        return ((merchant, description),)
+        account = (transaction.get("account") or "").strip().upper()
+        return ((merchant, description, account),)
 
     return ((_get_field_value(rule.match_field, transaction).upper(),),)
 

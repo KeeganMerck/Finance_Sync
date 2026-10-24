@@ -25,9 +25,11 @@ To push to Google Sheets instead of opening the dashboard:
 
 import argparse
 import csv
+import ipaddress
 import io
 import logging
 import os
+import secrets
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -35,15 +37,31 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import (
+    Flask,
+    Response,
+    abort,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
+from werkzeug.security import check_password_hash
 
 # ── Config ────────────────────────────────────────────────────────────────────
 from .core.config import (
     DASHBOARD_PORT,
+    DASHBOARD_HOST,
     DATABASE_PATH,
+    FINANCE_SYNC_COOKIE_SECURE,
+    FINANCE_SYNC_PASSWORD_HASH,
+    FINANCE_SYNC_SECRET_KEY,
     PLAID_CLIENT_ID,
     PLAID_ENV,
     RULES_CSV_PATH,
+    get_plaid_profiles,
 )
 from .modules import categorizer as _categorizer
 from .modules.database import (
@@ -60,6 +78,7 @@ from .modules.database import (
     recalculate_net_worth_history,
     upsert_plaid_token,
 )
+from .modules.db_backup import backup_database
 from .sync_manager import get_sync_status, start_background_sync
 
 _HERE = Path(__file__).resolve().parent
@@ -77,6 +96,116 @@ app = Flask(
     __name__,
     template_folder=str(_HERE / "templates"),
 )
+app.config.update(
+    SECRET_KEY=FINANCE_SYNC_SECRET_KEY or secrets.token_urlsafe(48),
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Strict",
+    SESSION_COOKIE_SECURE=FINANCE_SYNC_COOKIE_SECURE,
+)
+
+_CSRF_EXEMPT_ENDPOINTS = {"local_login", "static"}
+_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+@app.before_request
+def require_local_login():
+    if request.endpoint in _CSRF_EXEMPT_ENDPOINTS:
+        return None
+
+    if not FINANCE_SYNC_PASSWORD_HASH:
+        if request.path.startswith("/api/"):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Local password setup is required before using the dashboard.",
+                }
+            ), 503
+        return redirect(url_for("local_login"))
+
+    if not session.get("authenticated"):
+        if request.path.startswith("/api/"):
+            return jsonify({"success": False, "error": "Authentication required."}), 401
+        return redirect(url_for("local_login", next=request.full_path))
+
+    if request.method in _UNSAFE_METHODS:
+        expected = session.get("csrf_token", "")
+        supplied = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token", "")
+        if not expected or not secrets.compare_digest(expected, supplied):
+            if request.path.startswith("/api/"):
+                return jsonify({"success": False, "error": "Invalid CSRF token."}), 400
+            abort(400)
+    return None
+
+
+@app.after_request
+def add_local_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.endpoint != "static":
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.context_processor
+def inject_csrf_token():
+    return {"csrf_token": session.get("csrf_token", "")}
+
+
+@app.route("/login", methods=["GET", "POST"])
+def local_login():
+    if not FINANCE_SYNC_PASSWORD_HASH:
+        return (
+            render_template("login.html", setup_required=True, error=None, next_url="/"),
+            503,
+        )
+
+    csrf_token = session.setdefault("csrf_token", secrets.token_urlsafe(32))
+    if request.method == "POST":
+        supplied_csrf = request.form.get("csrf_token", "")
+        if not secrets.compare_digest(csrf_token, supplied_csrf):
+            abort(400)
+
+        password = request.form.get("password", "")
+        if not check_password_hash(FINANCE_SYNC_PASSWORD_HASH, password):
+            return (
+                render_template(
+                    "login.html",
+                    setup_required=False,
+                    error="Password not recognized.",
+                    csrf_token=csrf_token,
+                    next_url="/",
+                ),
+                401,
+            )
+
+        session.clear()
+        session["authenticated"] = True
+        session["csrf_token"] = secrets.token_urlsafe(32)
+        session.permanent = True
+        next_url = request.form.get("next", "/")
+        if not next_url.startswith("/") or next_url.startswith("//"):
+            next_url = "/"
+        return redirect(next_url)
+
+    next_url = request.args.get("next", "/")
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        next_url = "/"
+    return render_template(
+        "login.html",
+        setup_required=False,
+        error=None,
+        csrf_token=csrf_token,
+        next_url=next_url,
+    )
+
+
+@app.route("/logout", methods=["POST"])
+def local_logout():
+    session.clear()
+    return redirect(url_for("local_login"))
 
 
 # ── Database helpers ──────────────────────────────────────────────────────────
@@ -103,10 +232,17 @@ def _db(write=False):
     mode = "rw" if write else "ro"
     conn = sqlite3.connect(f"file:{DATABASE_PATH}?mode={mode}", uri=True)
     conn.row_factory = sqlite3.Row
+    should_backup = False
     try:
         yield conn
+        should_backup = write and conn.total_changes > 0
     finally:
         conn.close()
+    if should_backup:
+        try:
+            backup_database(force=True)
+        except Exception:
+            logger.exception("Dashboard write succeeded, but its backup failed")
 
 
 def _rows(query: str, params: tuple = (), write: bool = False) -> list[dict]:
@@ -403,6 +539,18 @@ def _get_transactions(
     all_txns.sort(key=lambda x: x["Date"], reverse=True)
 
     return all_txns
+
+
+def _get_rule_test_transactions() -> list[dict]:
+    """Return canonical Plaid transaction fields for rule reachability checks."""
+    return _rows(
+        """
+        SELECT date, account, merchant, description, institution,
+               plaid_category, plaid_category_primary, amount
+        FROM transactions
+        WHERE excluded = 0 AND pending = 0
+        """
+    )
 
 
 def _get_manual_snapshots() -> list[dict]:
@@ -784,7 +932,7 @@ def _investment_data() -> dict:
     accounts = [
         a
         for a in _current_accounts()
-        if (a.get("account_type") or "").lower() == "investment"
+        if (a.get("account_type") or "").lower() in {"investment", "brokerage"}
     ]
     account_names = {
         a["account_id"]: a.get("account_name") or a["account_id"] for a in accounts
@@ -847,8 +995,14 @@ def _investment_data() -> dict:
         imported = imported_by_key.get(
             (holding["account_id"], holding["security_id"]), {}
         )
-        imported_qty = min(quantity, max(imported.get("quantity") or 0, 0))
-        imported_cost = max(imported.get("total_cost") or 0, 0)
+        imported_purchase_qty = max(imported.get("quantity") or 0, 0)
+        imported_qty = min(quantity, imported_purchase_qty)
+        imported_cost_total = max(imported.get("total_cost") or 0, 0)
+        imported_cost = (
+            imported_cost_total * (imported_qty / imported_purchase_qty)
+            if imported_purchase_qty
+            else 0
+        )
         key = (holding["account_id"], holding.get("security_id"), holding["symbol"])
         entries = manual_by_key.get(key, [])
         # A security_id can be absent in some imported records, so symbol is
@@ -903,25 +1057,61 @@ def _investment_data() -> dict:
             }
         )
 
+    holdings_value_by_account: dict[str, float] = {}
+    for holding in holdings:
+        account_id = holding["account_id"]
+        holdings_value_by_account[account_id] = (
+            holdings_value_by_account.get(account_id, 0)
+            + (holding.get("current_value") or 0)
+        )
+
+    for account in accounts:
+        account_value = account.get("current_balance") or 0
+        account_holdings_value = holdings_value_by_account.get(account["account_id"], 0)
+        unitemized_account_value = round(account_value - account_holdings_value, 2)
+        account["account_value"] = round(account_value, 2)
+        account["holdings_value"] = round(account_holdings_value, 2)
+        account["unitemized_value"] = (
+            0.0 if unitemized_account_value == 0 else unitemized_account_value
+        )
+
     history = _rows(
         """
-        WITH ranked AS (
-            SELECT h.*,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY h.holding_id, h.snapshot_date
-                       ORDER BY h.last_updated DESC, h.id DESC
-                   ) AS rn
-            FROM investment_holdings_history h
+        WITH all_dates AS (
+            SELECT snapshot_date FROM account_snapshots WHERE snapshot_date <= ?
+            UNION
+            SELECT snapshot_date FROM manual_account_snapshots WHERE snapshot_date <= ?
+        ),
+        candidates AS (
+            SELECT d.snapshot_date AS effective_date,
+                   m.account_id, m.account_type, m.current_balance,
+                   1 AS source_priority, m.snapshot_date AS source_date
+            FROM all_dates d
+            JOIN manual_account_snapshots m ON m.snapshot_date <= d.snapshot_date
+            WHERE lower(m.account_type) IN ('investment', 'brokerage')
+            UNION ALL
+            SELECT d.snapshot_date AS effective_date,
+                   a.account_id, a.account_type, a.current_balance,
+                   0 AS source_priority, a.snapshot_date AS source_date
+            FROM all_dates d
+            JOIN account_snapshots a ON a.snapshot_date <= d.snapshot_date
+            WHERE lower(a.account_type) IN ('investment', 'brokerage')
+        ),
+        ranked AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY effective_date, account_id
+                ORDER BY source_priority DESC, source_date DESC
+            ) AS rn
+            FROM candidates
         )
-        SELECT snapshot_date,
-               SUM(current_value) AS current_value,
-               SUM(cost_basis) AS cost_basis,
-               SUM(gain_loss) AS gain_loss
+        SELECT effective_date AS snapshot_date,
+             ROUND(SUM(COALESCE(current_balance, 0)), 2) AS current_value
         FROM ranked
         WHERE rn = 1
-        GROUP BY snapshot_date
-        ORDER BY snapshot_date
+        GROUP BY effective_date
+        ORDER BY effective_date
         """
+        , (eastern_today(), eastern_today())
     )
 
     investment_transactions = _rows(
@@ -936,15 +1126,20 @@ def _investment_data() -> dict:
     for txn in investment_transactions:
         txn["account_name"] = account_names.get(txn["account_id"], txn["account_id"])
 
-    current_value = round(sum(h.get("current_value") or 0 for h in holdings), 2)
+    holdings_value = round(sum(h.get("current_value") or 0 for h in holdings), 2)
+    current_value = round(sum(a.get("current_balance") or 0 for a in accounts), 2)
     known_value = round(sum(h.get("known_value") or 0 for h in holdings), 2)
     unknown_value = round(sum(h.get("unknown_value") or 0 for h in holdings), 2)
+    unitemized_value = round(current_value - holdings_value, 2)
+    if unitemized_value == 0:
+        unitemized_value = 0.0
     cost_basis = round(sum(h.get("known_cost_basis") or 0 for h in holdings), 2)
     gain_loss = round(sum(h.get("known_gain_loss") or 0 for h in holdings), 2)
     transaction_amount = round(
         sum(t.get("amount") or 0 for t in investment_transactions), 2
     )
-    snapshots = [h.get("snapshot_date") for h in holdings if h.get("snapshot_date")]
+    snapshots = [a.get("snapshot_date") for a in accounts if a.get("snapshot_date")]
+    holding_account_count = len({h["account_id"] for h in holdings})
 
     return {
         "summary": {
@@ -956,13 +1151,16 @@ def _investment_data() -> dict:
             ),
             "holding_count": len(holdings),
             "account_count": len(accounts),
+            "holding_account_count": holding_account_count,
             "transaction_count": len(investment_transactions),
             "transaction_amount": transaction_amount,
             "as_of": max(snapshots) if snapshots else None,
+            "holdings_value": holdings_value,
+            "unitemized_value": unitemized_value,
             "known_value": known_value,
             "unknown_value": unknown_value,
             "basis_coverage_percent": (
-                round(known_value / current_value * 100, 2) if current_value else 0
+                round(known_value / holdings_value * 100, 2) if holdings_value else 0
             ),
         },
         "accounts": accounts,
@@ -1105,7 +1303,24 @@ def link_accounts():
 @app.route("/rules")
 def rules():
     """Category rules management page."""
-    return render_template("rules.html")
+    categories = {
+        str(row["category"]).strip()
+        for row in _rows(
+            """
+            SELECT DISTINCT TRIM(user_category) AS category
+            FROM transactions
+            WHERE user_category IS NOT NULL AND TRIM(user_category) != ''
+            """
+        )
+        if row.get("category")
+    }
+    categories.update(
+        str(record["row"].get("user_category") or "").strip()
+        for record in _read_rule_records()
+        if record["is_rule"] and record["row"].get("user_category")
+    )
+    categories.discard("")
+    return render_template("rules.html", categories=sorted(categories, key=str.casefold))
 
 
 @app.route("/transactions")
@@ -1507,6 +1722,223 @@ def api_transactions():
     start_date = request.args.get("start_date")
     end_date = request.args.get("end_date")
     return jsonify(_get_transactions(start_date, end_date))
+
+
+def _rule_file_ids(records: list[dict[str, Any]]) -> list[int]:
+    """Map loaded rules to their physical row indices in the rules CSV."""
+    ids = []
+    for file_index, record in enumerate(records):
+        if not record["is_rule"]:
+            continue
+        row = record["row"]
+        match_type = str(row.get("match_type") or "").strip().lower()
+        match_field = str(row.get("match_field") or "any").strip().lower()
+        pattern = str(row.get("pattern") or "").strip()
+        if (
+            not match_type
+            or not pattern
+            or match_type.startswith("#")
+            or match_field.startswith("#")
+            or pattern.startswith("#")
+            or match_type not in _categorizer.VALID_MATCH_TYPES
+        ):
+            continue
+        ids.append(file_index)
+    return ids
+
+
+def _reanalyze_transactions_for_rule(rule_file_id: int) -> dict[str, int]:
+    """Apply a newly-created rule to existing transactions it now governs."""
+    records = _read_rule_records()
+    rules = _categorizer.load_rules()
+    file_ids = _rule_file_ids(records)
+    if len(file_ids) != len(rules) or rule_file_id not in file_ids:
+        raise RuntimeError("Could not find the saved rule in the loaded rule list")
+
+    new_rule_index = file_ids.index(rule_file_id)
+    transactions = _rows(
+        """
+        SELECT transaction_id, date, account, merchant, description, institution,
+               plaid_category, plaid_category_primary, user_category, amount,
+               pending, excluded
+        FROM transactions
+        WHERE excluded = 0 AND pending = 0
+        """
+    )
+
+    updates = []
+    category_updates = 0
+    exclusion_updates = 0
+    matched_count = 0
+    for transaction in transactions:
+        first_match = next(
+            (
+                index
+                for index, rule in enumerate(rules)
+                if _categorizer._rule_matches(rule, transaction)
+            ),
+            None,
+        )
+        if first_match != new_rule_index:
+            continue
+        matched_count += 1
+
+        result = _categorizer.apply_rules(transaction, rules)
+        category = result.get("user_category") or ""
+        merchant = result.get("merchant") or ""
+        excluded = int(bool(result.get("excluded")))
+        if (
+            category == (transaction.get("user_category") or "")
+            and merchant == (transaction.get("merchant") or "")
+            and excluded == int(bool(transaction.get("excluded")))
+        ):
+            continue
+
+        updates.append(
+            (category or None, merchant or None, excluded, transaction["transaction_id"])
+        )
+        if category != (transaction.get("user_category") or ""):
+            category_updates += 1
+        if excluded:
+            exclusion_updates += 1
+
+    if updates:
+        with _db(write=True) as conn:
+            conn.executemany(
+                """
+                UPDATE transactions
+                SET user_category = ?, merchant = ?, excluded = ?,
+                    last_updated = datetime('now')
+                WHERE transaction_id = ?
+                """,
+                updates,
+            )
+            conn.commit()
+
+    return {
+        "matched_count": matched_count,
+        "updated_count": len(updates),
+        "category_updated_count": category_updates,
+        "excluded_count": exclusion_updates,
+    }
+
+
+@app.route("/api/transactions/<transaction_id>/category-explanation")
+def api_transaction_category_explanation(transaction_id: str):
+    """Explain the stored category and what the current rules would assign."""
+    rows = _rows(
+        "SELECT * FROM transactions WHERE transaction_id = ?",
+        (transaction_id,),
+    )
+    if not rows:
+        return jsonify({"success": False, "error": "Transaction not found"}), 404
+
+    transaction = rows[0]
+    records = _read_rule_records()
+    rules = _categorizer.load_rules()
+    file_ids = _rule_file_ids(records)
+    if len(file_ids) != len(rules):
+        logger.error("Could not map loaded rules to CSV rows for category explanation")
+        return jsonify({"success": False, "error": "Could not map category rules"}), 500
+
+    first_match = next(
+        (
+            (index + 1, file_ids[index], rule, records[file_ids[index]]["row"])
+            for index, rule in enumerate(rules)
+            if _categorizer._rule_matches(rule, transaction)
+        ),
+        None,
+    )
+    rule_result = _categorizer.apply_rules(transaction, rules)
+
+    if transaction.get("user_category"):
+        category_source = "Saved category value (user_category)"
+    elif transaction.get("plaid_category_primary"):
+        category_source = "Plaid primary category"
+    elif transaction.get("plaid_category"):
+        category_source = "Plaid detailed category"
+    else:
+        category_source = "No category source"
+
+    matched_rule = None
+    if first_match:
+        rule_order, rule_id, rule, row = first_match
+        matched_rule = {
+            "id": rule_id,
+            "order": rule_order,
+            "match_type": rule.match_type,
+            "match_field": rule.match_field,
+            "pattern": rule.pattern,
+            "user_category": row.get("user_category", ""),
+            "normalized_merchant": row.get("normalized_merchant", ""),
+            "exclude": rule.exclude,
+        }
+
+    return jsonify(
+        {
+            "success": True,
+            "transaction_id": transaction_id,
+            "current_category": _categorizer.resolve_category(transaction),
+            "category_source": category_source,
+            "stored_user_category": transaction.get("user_category") or "",
+            "plaid_category_primary": transaction.get("plaid_category_primary") or "",
+            "plaid_category": transaction.get("plaid_category") or "",
+            "current_rule_category": _categorizer.resolve_category(rule_result),
+            "matched_rule": matched_rule,
+        }
+    )
+
+
+@app.route(
+    "/api/transactions/<transaction_id>/apply-matching-rule-category",
+    methods=["POST"],
+)
+def api_apply_matching_rule_category(transaction_id: str):
+    """Explicitly apply the first matching rule's category to a stored transaction."""
+    rows = _rows(
+        "SELECT * FROM transactions WHERE transaction_id = ?",
+        (transaction_id,),
+    )
+    if not rows:
+        return jsonify({"success": False, "error": "Transaction not found"}), 404
+
+    transaction = rows[0]
+    records = _read_rule_records()
+    rules = _categorizer.load_rules()
+    file_ids = _rule_file_ids(records)
+    if len(file_ids) != len(rules):
+        logger.error("Could not map loaded rules to CSV rows for category update")
+        return jsonify({"success": False, "error": "Could not map category rules"}), 500
+
+    for index, rule in enumerate(rules):
+        if not _categorizer._rule_matches(rule, transaction):
+            continue
+        if rule.exclude or not rule.user_category:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "The first matching rule does not assign a category",
+                    }
+                ),
+                409,
+            )
+
+        with _db(write=True) as conn:
+            conn.execute(
+                "UPDATE transactions SET user_category = ?, last_updated = datetime('now') WHERE transaction_id = ?",
+                (rule.user_category, transaction_id),
+            )
+            conn.commit()
+        return jsonify(
+            {
+                "success": True,
+                "category": rule.user_category,
+                "rule_id": file_ids[index],
+            }
+        )
+
+    return jsonify({"success": False, "error": "No current rule matches this transaction"}), 409
 
 
 @app.route("/api/investments")
@@ -1986,17 +2418,59 @@ def _env_file_path() -> Path:
     return Path.cwd() / ".env"
 
 
-def _institution_env_key(institution_name: str, environment: str) -> str:
+def _institution_env_key(
+    institution_name: str, environment: str, profile_prefix: str = "PLAID"
+) -> str:
     safe_name = "".join(
         ch if ch.isalnum() else "_" for ch in institution_name.upper()
     ).strip("_")
     safe_name = "_".join(segment for segment in safe_name.split("_") if segment)
     env_name = (environment or PLAID_ENV or "production").upper()
-    return f"PLAID_{env_name}_TOKEN_{safe_name or 'INSTITUTION'}"
+    return f"{profile_prefix}_{env_name}_TOKEN_{safe_name or 'INSTITUTION'}"
+
+
+def _plaid_profiles_for_linking():
+    from .api import plaid_integration
+
+    profiles = get_plaid_profiles()
+    return profiles or [plaid_integration.get_default_plaid_profile()]
+
+
+def _plaid_profile_label(profile_name: str, profile_prefix: str = "") -> str:
+    profile = next(
+        (
+            item
+            for item in _plaid_profiles_for_linking()
+            if item.name == profile_name
+            or (profile_prefix and item.prefix == profile_prefix)
+        ),
+        None,
+    )
+    if profile:
+        configured_label = os.getenv(f"{profile.prefix}_ACCOUNT_LABEL", "").strip()
+        return configured_label or profile.name
+    return profile_name or profile_prefix or "Unknown profile"
+
+
+def _resolve_plaid_profile(profile_name: str | None):
+    profiles = _plaid_profiles_for_linking()
+    requested_name = (profile_name or profiles[0].name).strip().casefold()
+    profile = next(
+        (item for item in profiles if item.name.casefold() == requested_name),
+        None,
+    )
+    if profile is None:
+        raise ValueError("Choose a configured Plaid account profile")
+    if not profile.client_id or not profile.secret or not profile.env:
+        raise ValueError(f"Plaid profile '{profile.name}' is missing credentials")
+    return profile
 
 
 def _save_plaid_token_to_env(
-    institution_name: str, access_token: str, environment: str
+    institution_name: str,
+    access_token: str,
+    environment: str,
+    profile_prefix: str = "PLAID",
 ) -> str:
     from dotenv import set_key
 
@@ -2005,7 +2479,7 @@ def _save_plaid_token_to_env(
     if not env_path.exists():
         env_path.touch()
 
-    key = _institution_env_key(institution_name, environment)
+    key = _institution_env_key(institution_name, environment, profile_prefix)
     set_key(str(env_path), key, access_token)
     os.environ[key] = access_token
     return key
@@ -2013,13 +2487,51 @@ def _save_plaid_token_to_env(
 
 @app.route("/api/plaid/tokens")
 def api_plaid_tokens():
-    """Get all Plaid tokens from database."""
+    """Get safe connection metadata without returning access tokens."""
     try:
         tokens = get_plaid_tokens(active_only=False)
-        return jsonify({"success": True, "tokens": tokens})
+        safe_tokens = [
+            {
+                "profile_name": token.get("profile_name") or "PRIMARY",
+                "profile_prefix": token.get("profile_prefix") or "PLAID",
+                "profile_label": _plaid_profile_label(
+                    token.get("profile_name") or "PRIMARY",
+                    token.get("profile_prefix") or "PLAID",
+                ),
+                "institution_name": token.get("institution_name"),
+                "environment": token.get("environment"),
+                "created_at": token.get("created_at"),
+                "last_updated": token.get("last_updated"),
+                "is_active": token.get("is_active"),
+            }
+            for token in tokens
+        ]
+        return jsonify({"success": True, "tokens": safe_tokens})
     except Exception as e:
         logger.exception("Failed to get Plaid tokens")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/plaid/profiles")
+def api_plaid_profiles():
+    """Return selectable profile names and safe display metadata."""
+    profiles = _plaid_profiles_for_linking()
+    return jsonify(
+        {
+            "success": True,
+            "default_profile": profiles[0].name if profiles else None,
+            "profiles": [
+                {
+                    "profile_name": profile.name,
+                    "profile_prefix": profile.prefix,
+                    "account_label": _plaid_profile_label(profile.name, profile.prefix),
+                    "environment": profile.env,
+                    "ready": bool(profile.client_id and profile.secret and profile.env),
+                }
+                for profile in profiles
+            ],
+        }
+    )
 
 
 @app.route("/api/admin/plaid/tokens")
@@ -2081,7 +2593,7 @@ def api_admin_set_token_active(token_id: int):
             )
         else:
             # Deactivate via existing helper
-            success = delete_plaid_token(institution)
+            success = delete_plaid_token(institution, profile_name=profile_name)
 
         if success:
             return jsonify({"success": True, "message": "Token updated"})
@@ -2136,9 +2648,12 @@ def api_upsert_plaid_token():
 
 @app.route("/api/plaid/tokens/<institution_name>", methods=["DELETE"])
 def api_delete_plaid_token(institution_name):
-    """Delete/deactivate a Plaid token."""
+    """Deactivate one institution token in the specified profile."""
     try:
-        success = delete_plaid_token(institution_name)
+        profile_name = request.args.get("profile_name", "").strip()
+        if not profile_name:
+            return jsonify({"success": False, "error": "Missing profile_name"}), 400
+        success = delete_plaid_token(institution_name, profile_name=profile_name)
         if success:
             return jsonify(
                 {
@@ -2162,12 +2677,15 @@ def api_plaid_link_token():
         data = request.get_json(silent=True) or {}
         public_token = data.get("public_token")
         institution_name = data.get("institution_name")
-        environment = data.get("environment") or PLAID_ENV or "production"
+        profile_name = data.get("profile_name")
 
         if not public_token:
             return jsonify({"success": False, "error": "Missing public_token"}), 400
 
-        profile = plaid_integration.get_default_plaid_profile()
+        try:
+            profile = _resolve_plaid_profile(profile_name)
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)}), 400
         client = plaid_integration.get_plaid_client(profile)
 
         from plaid.model.item_public_token_exchange_request import (
@@ -2182,19 +2700,30 @@ def api_plaid_link_token():
         institution_name = institution_name or "Plaid Institution"
 
         success = upsert_plaid_token(
-            institution_name, access_token, item_id, environment
+            institution_name,
+            access_token,
+            item_id,
+            profile.env,
+            profile_name=profile.name,
+            profile_prefix=profile.prefix,
         )
 
         if success:
             env_key = _save_plaid_token_to_env(
-                institution_name, access_token, environment
+                institution_name,
+                access_token,
+                profile.env,
+                profile.prefix,
             )
             return jsonify(
                 {
                     "success": True,
                     "item_id": item_id,
                     "env_key": env_key,
-                    "message": f"Successfully linked {institution_name}",
+                    "profile_name": profile.name,
+                    "profile_label": _plaid_profile_label(profile.name, profile.prefix),
+                    "environment": profile.env,
+                    "message": f"Successfully linked {institution_name} to {_plaid_profile_label(profile.name, profile.prefix)}",
                 }
             )
         else:
@@ -2216,7 +2745,11 @@ def api_create_link_token():
     try:
         from .api import plaid_integration
 
-        profile = plaid_integration.get_default_plaid_profile()
+        payload = request.get_json(silent=True) or {}
+        try:
+            profile = _resolve_plaid_profile(payload.get("profile_name"))
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)}), 400
         link_token = plaid_integration.create_link_token(
             user_id="finance_sync_" + uuid.uuid4().hex,
             profile=profile,
@@ -2227,6 +2760,9 @@ def api_create_link_token():
                 "link_token": link_token,
                 "environment": profile.env,
                 "profile": profile.name,
+                "profile_name": profile.name,
+                "profile_prefix": profile.prefix,
+                "profile_label": _plaid_profile_label(profile.name, profile.prefix),
             }
         )
 
@@ -2305,16 +2841,43 @@ def api_add_rule():
             ),
         )
 
-        # Load existing ordered rules as CategoryRule objects
+        # Load existing ordered rules as CategoryRule objects. Keep their CSV
+        # row IDs alongside them because comments and blank rows are preserved.
         existing_rules = _categorizer.load_rules()
+        rule_file_ids = []
+        for file_index, record in enumerate(records):
+            if not record["is_rule"]:
+                continue
+            row = record["row"]
+            match_type = str(row.get("match_type") or "").strip().lower()
+            match_field = str(row.get("match_field") or "any").strip().lower()
+            pattern = str(row.get("pattern") or "").strip()
+            if (
+                not match_type
+                or not pattern
+                or match_type.startswith("#")
+                or match_field.startswith("#")
+                or pattern.startswith("#")
+                or match_type not in _categorizer.VALID_MATCH_TYPES
+            ):
+                continue
+            rule_file_ids.append(file_index)
+
+        if len(rule_file_ids) != len(existing_rules):
+            raise RuntimeError("Could not map loaded rules to their CSV row IDs")
 
         # Determine insertion index (default: append at end)
-        insertion_index = (
-            len(existing_rules) if insert_before is None else int(insert_before)
+        insertion_record_index = (
+            len(records) if insert_before is None else int(insert_before)
+        )
+        if insertion_record_index < 0 or insertion_record_index > len(records):
+            insertion_record_index = len(records)
+        insertion_index = sum(
+            file_id < insertion_record_index for file_id in rule_file_ids
         )
 
         # Load current transactions to test reachability
-        txns = _get_transactions()
+        txns = _get_rule_test_transactions()
 
         # For each txn, determine index of first matching existing rule
         matched_by = {}
@@ -2352,25 +2915,48 @@ def api_add_rule():
         else:
             # Check if all matched txns are already captured by earlier rules
             already_captured = []
-            earliest_conflict = None
+            conflict_counts = {}
             for idx in candidate_matches:
                 m = matched_by.get(idx)
                 if m is not None and m < insertion_index:
                     already_captured.append(idx)
-                    if earliest_conflict is None or m < earliest_conflict:
-                        earliest_conflict = m
+                for rule_index, existing_rule in enumerate(
+                    existing_rules[:insertion_index]
+                ):
+                    if _categorizer._rule_matches(existing_rule, txns[idx]):
+                        conflict_counts[rule_index] = (
+                            conflict_counts.get(rule_index, 0) + 1
+                        )
 
             if len(already_captured) == len(candidate_matches):
                 # Unreachable because earlier rules already handle all these txns
+                conflicting_rules = []
+                for rule_index, matched_count in sorted(conflict_counts.items()):
+                    file_id = rule_file_ids[rule_index]
+                    rule_row = records[file_id]["row"]
+                    conflicting_rules.append(
+                        {
+                            "id": file_id,
+                            "order": rule_index + 1,
+                            "match_type": rule_row["match_type"],
+                            "match_field": rule_row["match_field"],
+                            "pattern": rule_row["pattern"],
+                            "user_category": rule_row["user_category"],
+                            "normalized_merchant": rule_row["normalized_merchant"],
+                            "exclude": rule_row["exclude"],
+                            "matched_count": matched_count,
+                        }
+                    )
+                earliest_conflict_id = conflicting_rules[0]["id"]
                 diagnostics = {
                     "unreachable": True,
                     "matched_count": len(candidate_matches),
                     "already_captured_count": len(already_captured),
-                    "earliest_conflicting_rule_id": earliest_conflict,
+                    "earliest_conflicting_rule_id": earliest_conflict_id,
+                    "overshadowing_rules": conflicting_rules,
                 }
                 # Offer insertion suggestion: insert before earliest_conflict to take effect
-                if earliest_conflict is not None:
-                    diagnostics["suggest_insert_before"] = earliest_conflict
+                diagnostics["suggest_insert_before"] = earliest_conflict_id
 
                 # If client explicitly forces creation, allow it
                 if payload.get("force"):
@@ -2394,15 +2980,21 @@ def api_add_rule():
         if insert_before is None:
             records.append(row_record)
         else:
-            idx = int(insert_before)
-            if idx < 0 or idx > len(records):
-                records.append(row_record)
-            else:
-                records.insert(idx, row_record)
+            records.insert(insertion_record_index, row_record)
 
         _write_rule_records(records)
+        try:
+            analysis = _reanalyze_transactions_for_rule(insertion_record_index)
+        except Exception as analysis_error:
+            logger.exception("Rule saved, but transaction reanalysis failed")
+            analysis = {"error": str(analysis_error)}
         return jsonify(
-            {"success": True, "message": "Rule added successfully", "rule": rule_data}
+            {
+                "success": True,
+                "message": "Rule added successfully",
+                "rule": rule_data,
+                "analysis": analysis,
+            }
         )
     except ValueError as e:
         return jsonify({"success": False, "error": str(e)}), 400
@@ -2490,6 +3082,37 @@ def _print_startup():
     print("\n  Press Ctrl+C to stop.\n")
 
 
+def validate_dashboard_bind_security(
+    host: str,
+    password_hash: str,
+    secret_key: str,
+    cookie_secure: bool,
+) -> None:
+    """Reject network-facing binds unless production session controls are set."""
+    normalized_host = host.strip().lower().strip("[]")
+    is_loopback = normalized_host == "localhost"
+    if not is_loopback:
+        try:
+            is_loopback = ipaddress.ip_address(normalized_host).is_loopback
+        except ValueError:
+            is_loopback = False
+    if is_loopback:
+        return
+
+    missing = []
+    if not password_hash:
+        missing.append("FINANCE_SYNC_PASSWORD_HASH")
+    if not secret_key:
+        missing.append("FINANCE_SYNC_SECRET_KEY")
+    if not cookie_secure:
+        missing.append("FINANCE_SYNC_COOKIE_SECURE=true")
+    if missing:
+        raise ValueError(
+            "Refusing to bind the finance dashboard to a network interface. "
+            "Configure " + ", ".join(missing) + " before using a non-loopback host."
+        )
+
+
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Finance Sync Dashboard")
@@ -2509,6 +3132,15 @@ if __name__ == "__main__":
         help="Only sync investments (skip transactions)",
     )
     args = parser.parse_args()
+    try:
+        validate_dashboard_bind_security(
+            DASHBOARD_HOST,
+            FINANCE_SYNC_PASSWORD_HASH,
+            FINANCE_SYNC_SECRET_KEY,
+            FINANCE_SYNC_COOKIE_SECURE,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     # ── Run the sync pipeline first (unless --no-sync is specified) ─────────────────────
     if not args.no_sync:
@@ -2561,4 +3193,4 @@ if __name__ == "__main__":
 
     # ── Start the web server ──────────────────────────────────────────────────
     _print_startup()
-    app.run(host="0.0.0.0", port=DASHBOARD_PORT, debug=False)
+    app.run(host=DASHBOARD_HOST, port=DASHBOARD_PORT, debug=False)

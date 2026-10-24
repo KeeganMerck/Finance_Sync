@@ -80,6 +80,7 @@ def _sync_lock() -> Iterator[None]:
 def run_full_sync() -> None:
     """Run transactions, balances, and investments without Google Sheets export."""
     from .main import run_pipeline
+    from .modules.db_backup import backup_database
 
     with _sync_lock():
         logger.info("Starting full finance sync.")
@@ -88,6 +89,10 @@ def run_full_sync() -> None:
             sync_transactions=True,
             sync_investments=True,
         )
+        try:
+            backup_database(force=True)
+        except Exception:
+            logger.exception("Sync completed, but its database backup failed")
         logger.info("Full finance sync completed.")
 
 

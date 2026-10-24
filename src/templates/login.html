@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Unlock Finance Dashboard</title>
+  <style>
+    :root { color-scheme: dark; font-family: "Segoe UI", sans-serif; background: #0f172a; color: #e2e8f0; }
+    * { box-sizing: border-box; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; }
+    main { width: min(100%, 390px); padding: 28px; background: #1e293b; border: 1px solid #334155; border-radius: 12px; }
+    h1 { margin: 0; font-size: 21px; }
+    p { color: #94a3b8; font-size: 14px; line-height: 1.5; }
+    label { display: block; margin: 22px 0 7px; color: #cbd5e1; font-size: 13px; }
+    input[type="password"] { width: 100%; padding: 11px 12px; border: 1px solid #475569; border-radius: 7px; background: #0f172a; color: #f8fafc; font-size: 15px; }
+    button { width: 100%; margin-top: 16px; padding: 11px 14px; border: 0; border-radius: 7px; background: #0284c7; color: white; font-size: 14px; font-weight: 600; cursor: pointer; }
+    button:hover { background: #0ea5e9; }
+    .error { color: #fca5a5; }
+    code { color: #bae6fd; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Finance Dashboard</h1>
+    {% if setup_required %}
+      <p>The dashboard is locked until local password setup is complete.</p>
+      <p>From the project folder, run <code>python -m src.local_security_setup</code>. The password is entered privately in the terminal and stored as a hash in your ignored <code>.env</code> file.</p>
+    {% else %}
+      <p>Enter your local dashboard password to continue.</p>
+      {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+      <form method="post" action="{{ url_for('local_login') }}" autocomplete="on">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="next" value="{{ next_url }}">
+        <label for="password">Dashboard password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+        <button type="submit">Unlock dashboard</button>
+      </form>
+    {% endif %}
+  </main>
+</body>
+</html>

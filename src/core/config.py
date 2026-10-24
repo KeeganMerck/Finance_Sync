@@ -43,6 +43,13 @@ LOGS_DIR.mkdir(exist_ok=True)
 
 # SQLite database
 DATABASE_PATH = DATA_DIR / "finance.db"
+DATABASE_BACKUP_DIR = Path(
+    os.getenv(
+        "DATABASE_BACKUP_DIR",
+        str(Path.home() / "Documents" / "FinanceSync DB Backup"),
+    )
+).expanduser()
+DATABASE_BACKUP_RETENTION_DAYS = int(os.getenv("DATABASE_BACKUP_RETENTION_DAYS", "30"))
 
 # Primary Excel-compatible export (Date, Account, Description, Category, Amount)
 CASH_FLOW_CSV_PATH = DATA_DIR / "cash_flow.csv"
@@ -60,7 +67,13 @@ RULES_CSV_PATH = RULES_DIR / "category_rules.csv"
 LOG_PATH = LOGS_DIR / "sync.log"
 
 # Dashboard settings
+DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "127.0.0.1")
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", 5000))
+FINANCE_SYNC_PASSWORD_HASH = os.getenv("FINANCE_SYNC_PASSWORD_HASH", "").strip()
+FINANCE_SYNC_SECRET_KEY = os.getenv("FINANCE_SYNC_SECRET_KEY", "").strip()
+FINANCE_SYNC_COOKIE_SECURE = os.getenv(
+    "FINANCE_SYNC_COOKIE_SECURE", "false"
+).lower() == "true"
 
 # Google Sheets export settings
 GOOGLE_SHEETS_CREDENTIALS_PATH = PROJECT_ROOT / "google_credentials.json"

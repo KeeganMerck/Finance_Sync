@@ -7,12 +7,15 @@
   <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
     <div>
       <h1 class="text-2xl font-bold text-slate-100">Link Accounts</h1>
-      <p class="text-sm text-slate-400 mt-1">Connect institutions through Plaid Link and save tokens for future syncs.</p>
+      <p class="text-sm text-slate-400 mt-1">Choose which Plaid account owns each new connection before opening Link.</p>
     </div>
-    <button id="plaid-link-btn"
-            class="inline-flex items-center justify-center px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:bg-slate-700 disabled:text-slate-500 text-sm font-medium text-white transition-colors">
-      Open Plaid Link
-    </button>
+    <div class="flex flex-col items-stretch gap-2 sm:items-end">
+      <button id="plaid-link-btn" disabled
+              class="inline-flex items-center justify-center px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:bg-slate-700 disabled:text-slate-500 text-sm font-medium text-white transition-colors">
+        Open Plaid Link
+      </button>
+      <p class="text-xs text-slate-400">New connection goes to <span id="selected-profile-summary" class="font-semibold text-slate-200">Loading Plaid accounts…</span></p>
+    </div>
   </div>
 
   <div id="status-message" class="hidden rounded-lg border px-4 py-3 text-sm"></div>
@@ -44,18 +47,16 @@
 
     <section class="bg-surface rounded-xl border border-slate-700">
       <div class="px-6 py-4 border-b border-slate-700">
-        <h2 class="font-semibold text-slate-100">Plaid Config</h2>
-        <p class="text-xs text-slate-500 mt-1">Read from the current environment.</p>
+        <h2 class="font-semibold text-slate-100">Plaid Account for New Links</h2>
+        <p class="text-xs text-slate-500 mt-1">Select which configured Plaid developer account will own the connection.</p>
       </div>
-      <div class="p-6 space-y-3 text-sm">
-        <div class="flex items-center justify-between gap-4">
-          <span class="text-slate-400">Environment</span>
-          <span class="font-medium text-slate-100">{{ PLAID_ENV or "Not set" }}</span>
-        </div>
-        <div class="flex items-center justify-between gap-4">
-          <span class="text-slate-400">Client ID</span>
-          <span class="font-medium {{ 'text-emerald-400' if PLAID_CLIENT_ID else 'text-red-400' }}">{{ "Configured" if PLAID_CLIENT_ID else "Missing" }}</span>
-        </div>
+      <div class="p-6 space-y-3">
+        <label for="plaid-profile-select" class="block text-xs text-slate-400">Plaid account</label>
+        <select id="plaid-profile-select" disabled class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+          <option>Loading configured Plaid accounts…</option>
+        </select>
+        <p id="plaid-profile-details" class="text-xs text-slate-500" aria-live="polite">Connected institutions below show which profile owns each link.</p>
+        <p class="text-xs text-slate-500">To show your email identities instead of PRIMARY / SECONDARY, set <code>PLAID_ACCOUNT_LABEL</code> and <code>SECONDARY_PLAID_ACCOUNT_LABEL</code> in <code>.env</code>.</p>
       </div>
     </section>
   </div>
@@ -118,6 +119,7 @@ async function loadLinkedInstitutions() {
           <thead>
             <tr>
               <th class="text-left text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Institution</th>
+              <th class="text-left text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Plaid Account</th>
               <th class="text-left text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Environment</th>
               <th class="text-left text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Saved</th>
               <th class="text-left text-xs text-slate-400 px-3 py-2 font-medium border-b border-slate-700">Status</th>
@@ -130,6 +132,7 @@ async function loadLinkedInstitutions() {
               return `
                 <tr class="border-b border-slate-700/50">
                   <td class="px-3 py-3 text-slate-100 font-medium">${escapeHtml(token.institution_name)}</td>
+                  <td class="px-3 py-3 text-slate-300">${escapeHtml(token.profile_label || token.profile_name)}</td>
                   <td class="px-3 py-3 text-slate-400">${escapeHtml(token.environment || '')}</td>
                   <td class="px-3 py-3 text-slate-400">${escapeHtml((token.created_at || '').slice(0, 10))}</td>
                   <td class="px-3 py-3">
@@ -138,7 +141,7 @@ async function loadLinkedInstitutions() {
                     </span>
                   </td>
                   <td class="px-3 py-3 text-right">
-                    ${active ? `<button class="text-xs text-red-400 hover:text-red-300" onclick="deleteToken('${encodeURIComponent(token.institution_name)}')">Remove</button>` : ''}
+                    ${active ? `<button class="text-xs text-red-400 hover:text-red-300" onclick="deleteToken('${encodeURIComponent(token.institution_name)}','${encodeURIComponent(token.profile_name)}','${encodeURIComponent(token.profile_label || token.profile_name)}')">Remove</button>` : ''}
                   </td>
                 </tr>
               `;
@@ -151,17 +154,52 @@ async function loadLinkedInstitutions() {
   }
 }
 
-async function deleteToken(encodedInstitutionName) {
+async function deleteToken(encodedInstitutionName, encodedProfileName, encodedProfileLabel) {
   const institutionName = decodeURIComponent(encodedInstitutionName);
-  if (!confirm(`Remove ${institutionName} from active sync tokens?`)) return;
+  const profileName = decodeURIComponent(encodedProfileName);
+  const profileLabel = decodeURIComponent(encodedProfileLabel);
+  if (!confirm(`Remove ${institutionName} from ${profileLabel} active sync tokens?`)) return;
 
   try {
-    const response = await fetch(`/api/plaid/tokens/${encodeURIComponent(institutionName)}`, { method: 'DELETE' });
+    const response = await fetch(`/api/plaid/tokens/${encodeURIComponent(institutionName)}?profile_name=${encodeURIComponent(profileName)}`, { method: 'DELETE' });
     const data = await response.json();
     if (!data.success) throw new Error(data.error || 'Could not remove token');
     showStatus('success', data.message);
     loadLinkedInstitutions();
   } catch (error) {
+    showStatus('error', error.message);
+  }
+}
+
+let plaidProfiles = [];
+
+function updateSelectedProfileSummary() {
+  const select = document.getElementById('plaid-profile-select');
+  const profile = plaidProfiles.find(item => item.profile_name === select.value);
+  if (!profile) return;
+  document.getElementById('selected-profile-summary').textContent = `${profile.account_label} (${profile.environment})`;
+  document.getElementById('plaid-profile-details').textContent = `New links will be saved to ${profile.account_label} in the ${profile.environment} environment. Plaid Link will then ask for the institution login.`;
+}
+
+async function loadPlaidProfiles() {
+  const select = document.getElementById('plaid-profile-select');
+  try {
+    const response = await fetch('/api/plaid/profiles');
+    const data = await response.json();
+    if (!response.ok || !data.success) throw new Error(data.error || 'Could not load Plaid accounts');
+    plaidProfiles = data.profiles || [];
+    const readyProfiles = plaidProfiles.filter(profile => profile.ready);
+    if (!readyProfiles.length) throw new Error('No Plaid account profiles have complete credentials.');
+    select.innerHTML = readyProfiles.map(profile => `<option value="${escapeHtml(profile.profile_name)}">${escapeHtml(profile.account_label)} · ${escapeHtml(profile.environment)}</option>`).join('');
+    select.value = data.default_profile || readyProfiles[0].profile_name;
+    if (!readyProfiles.some(profile => profile.profile_name === select.value)) select.value = readyProfiles[0].profile_name;
+    select.disabled = false;
+    plaidButton.disabled = false;
+    updateSelectedProfileSummary();
+  } catch (error) {
+    select.innerHTML = '<option value="">No configured Plaid account</option>';
+    document.getElementById('selected-profile-summary').textContent = 'Unavailable';
+    document.getElementById('plaid-profile-details').textContent = error.message;
     showStatus('error', error.message);
   }
 }
@@ -174,7 +212,8 @@ async function openPlaidLink() {
   try {
     const response = await fetch('/api/plaid/create-link-token', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile_name: document.getElementById('plaid-profile-select').value })
     });
     const data = await response.json();
     if (!data.success) throw new Error(data.error || 'Could not create link token');
@@ -192,12 +231,13 @@ async function openPlaidLink() {
             body: JSON.stringify({
               public_token: publicToken,
               institution_name: institutionName,
-              environment: data.environment
+              environment: data.environment,
+              profile_name: data.profile_name
             })
           });
           const result = await exchange.json();
           if (!result.success) throw new Error(result.error || 'Could not save access token');
-          showStatus('success', `${institutionName} linked. Saved as ${result.env_key}.`);
+          showStatus('success', `${institutionName} linked to ${result.profile_label} (${result.environment}).`);
           loadLinkedInstitutions();
         } catch (error) {
           showStatus('error', error.message);
@@ -218,7 +258,9 @@ async function openPlaidLink() {
 }
 
 plaidButton.addEventListener('click', openPlaidLink);
+document.getElementById('plaid-profile-select').addEventListener('change', updateSelectedProfileSummary);
 document.getElementById('refresh-tokens-btn').addEventListener('click', loadLinkedInstitutions);
+loadPlaidProfiles();
 loadLinkedInstitutions();
 </script>
 {% endblock %}

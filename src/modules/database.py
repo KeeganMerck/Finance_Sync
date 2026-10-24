@@ -47,6 +47,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from ..core.config import DATABASE_PATH, ENABLE_DATABASE
+from .db_backup import backup_database
 
 logger = logging.getLogger(__name__)
 
@@ -493,14 +494,21 @@ def _get_connection(
     # Enable WAL mode for better concurrent read performance (future-proofing)
     conn.execute("PRAGMA journal_mode=WAL;")
 
+    should_backup = False
     try:
         yield conn
+        should_backup = conn.total_changes > 0
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+    if should_backup and Path(db_path).resolve() == DATABASE_PATH.resolve():
+        try:
+            backup_database(db_path)
+        except Exception:
+            logger.exception("Database write succeeded, but its backup failed")
 
 
 # ─── Schema Initialization ─────────────────────────────────────────────────────
@@ -1292,7 +1300,11 @@ def get_plaid_tokens(
         return []
 
 
-def delete_plaid_token(institution_name: str, db_path: Path = DATABASE_PATH) -> bool:
+def delete_plaid_token(
+    institution_name: str,
+    db_path: Path = DATABASE_PATH,
+    profile_name: str | None = None,
+) -> bool:
     """
     Delete or deactivate a Plaid token.
 
@@ -1309,12 +1321,21 @@ def delete_plaid_token(institution_name: str, db_path: Path = DATABASE_PATH) -> 
 
     try:
         with _get_connection(db_path) as conn:
-            conn.execute(
-                "UPDATE plaid_tokens SET is_active = 0 WHERE institution_name = ?",
-                (institution_name,),
-            )
+            if profile_name:
+                conn.execute(
+                    "UPDATE plaid_tokens SET is_active = 0 WHERE institution_name = ? AND profile_name = ?",
+                    (institution_name, profile_name),
+                )
+            else:
+                conn.execute(
+                    "UPDATE plaid_tokens SET is_active = 0 WHERE institution_name = ?",
+                    (institution_name,),
+                )
             conn.commit()
-        logger.info(f"Plaid token deactivated for {institution_name}")
+        logger.info(
+            f"Plaid token deactivated for {institution_name}"
+            + (f" in profile {profile_name}" if profile_name else "")
+        )
         return True
     except Exception as e:  # noqa: BLE001
         logger.error(f"Failed to delete Plaid token for {institution_name}: {e}")

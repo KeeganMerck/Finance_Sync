@@ -336,7 +336,7 @@ function renderHistoryChart(history) {
         legend: { display: false },
         tooltip: {
           callbacks: { 
-            label: ctx => fmtAmt(ctx.raw),
+            label: ctx => fmtAmt(ctx.parsed.y),
             title: ctx => ctx[0].raw.snapshot_date
           }
         }

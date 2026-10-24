@@ -104,6 +104,42 @@ python main.py
 5. Exports `data/cash_flow.csv` (for Excel) and `data/raw_transactions.csv`
 6. Logs a summary to `logs/sync.log` and stdout
 
+## Local Dashboard Security
+
+The dashboard binds to `127.0.0.1` by default and requires a local password.
+Initialize or rotate the password from the project folder:
+
+```powershell
+python -m src.local_security_setup
+```
+
+The password is entered without echo, stored as a scrypt hash in the ignored
+`.env` file, and is never printed. The setup command also creates the Flask
+session signing key. Restart the app after setup. Start the dashboard without
+triggering a Plaid sync at launch:
+
+```powershell
+python -m src.dashboard --no-sync
+```
+
+Open `http://127.0.0.1:5000`. Sessions expire after 12 hours; use **Lock** to
+sign out. Keep `DASHBOARD_HOST` at its default for local use. Do not set it to
+`0.0.0.0` or forward the port on your router for local use. A startup guard
+requires password auth, a stable secret key, and secure cookies before allowing
+a non-loopback bind, but that is not a replacement for Cloudflare Access,
+Cloudflare Tunnel, and firewall controls. Leave `FINANCE_SYNC_COOKIE_SECURE`
+unset for local HTTP. Set it to `true` only when the app is served entirely
+over HTTPS.
+
+The SQLite database is backed up with SQLite's online backup API after writes
+(throttled to one automatic copy per five minutes) and again after successful
+full syncs. Backups default to `%USERPROFILE%\Documents\FinanceSync DB Backup`
+and expire after 30 days. `DATABASE_BACKUP_DIR` and
+`DATABASE_BACKUP_RETENTION_DAYS` can override those settings. Backups contain
+the same sensitive financial data as the live database; keep that folder
+private and protect the drive with Windows device encryption. Backup failures
+are logged but do not undo successful finance updates.
+
 ---
 
 ## Running the Tests
@@ -162,6 +198,21 @@ All settings are in `config.py`. Key flags:
 |-------------------|---------|--------------------------------------------------|
 | `ENABLE_DATABASE` | `True`  | Set `False` to skip SQLite writes during testing |
 | `DRY_RUN`         | `False` | Set `True` to run without writing any files      |
+
+### Plaid account labels and link routing
+
+The Link Accounts page lets you select which configured Plaid profile owns a
+new connection and shows the owning profile for each existing connection. To
+identify profiles by their Plaid email accounts, set display-only labels in
+`.env` (these values are not credentials):
+
+```dotenv
+PLAID_ACCOUNT_LABEL=primary-email@example.com
+SECONDARY_PLAID_ACCOUNT_LABEL=secondary-email@example.com
+```
+
+The primary profile uses the `PLAID_` credential prefix; the secondary profile
+uses `SECONDARY_PLAID_`. Plaid Link handles the institution login separately.
 
 ---
 

@@ -348,6 +348,17 @@
   </div>
 </div>
 
+<div id="category-reason-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+  <div class="bg-surface rounded-xl border border-slate-700 p-6 w-full max-w-lg mx-4">
+    <h2 class="text-lg font-bold text-slate-100 mb-2">Why this category?</h2>
+    <div id="category-reason-content" class="space-y-3 text-sm text-slate-300" aria-live="polite"></div>
+    <div class="flex justify-end gap-3 pt-5">
+      <button type="button" id="category-reason-close" class="px-4 py-2 rounded-lg text-sm font-medium text-slate-300 hover:text-slate-100">Close</button>
+      <button type="button" id="apply-current-rule-category-btn" class="hidden bg-sky-600 hover:bg-sky-500 text-white px-4 py-2 rounded-lg text-sm font-medium">Apply matching rule category</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Exclude Confirmation Modal ── -->
 <div id="exclude-confirm-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
   <div class="bg-surface rounded-xl border border-slate-700 p-6 w-full max-w-md mx-4">
@@ -404,6 +415,7 @@ let columnSorts = {}; // { column: 'asc' | 'desc' | null }
 let currentFilterColumn = null;
 let currentTransactionToExclude = null;
 let currentEditingTransaction = null;
+let categoryReasonTransactionId = null;
 
 // Column definitions with data types
 const COLUMNS = [
@@ -468,6 +480,8 @@ document.getElementById('manual-form').addEventListener('submit', addManualTrans
 document.getElementById('cancel-manual-btn').addEventListener('click', closeManualModal);
 document.getElementById('edit-form').addEventListener('submit', saveEdit);
 document.getElementById('cancel-edit-btn').addEventListener('click', closeEditModal);
+document.getElementById('category-reason-close').addEventListener('click', closeCategoryReason);
+document.getElementById('apply-current-rule-category-btn').addEventListener('click', applyCurrentRuleCategory);
 document.getElementById('exclude-btn').addEventListener('click', showExcludeConfirm);
 document.getElementById('delete-btn').addEventListener('click', showDeleteConfirm);
 document.getElementById('cancel-exclude-btn').addEventListener('click', closeExcludeConfirm);
@@ -609,7 +623,8 @@ function renderTable(transactions) {
       <td class="${bg} px-4 py-2 text-sm text-slate-300">${t.Category || '-'}</td>
       <td class="${bg} text-right px-4 py-2 text-sm font-medium whitespace-nowrap">${amtSpan(t.Amount)}</td>
       <td class="${bg} text-center px-4 py-2 whitespace-nowrap">
-        ${canEdit ? `<button onclick="openEditModal('${t.transaction_id}')" class="text-sky-400 hover:text-sky-300 text-xs font-medium">Edit</button>` : '<span class="text-slate-600 text-xs">—</span>'}
+        ${t.source === 'plaid' ? `<button type="button" data-category-reason="${escapeHtml(t.transaction_id)}" class="text-slate-400 hover:text-sky-300 text-xs font-medium mr-3" title="Explain this transaction's category">Why?</button>` : ''}
+        ${canEdit ? `<button onclick="openEditModal('${t.transaction_id}')" class="text-sky-400 hover:text-sky-300 text-xs font-medium">Edit</button>` : (t.source !== 'plaid' ? '<span class="text-slate-600 text-xs">—</span>' : '')}
       </td>
     </tr>`;
   }).join('');
@@ -623,7 +638,12 @@ function renderTable(transactions) {
     <p class="text-xs text-slate-500 mt-4">
       Showing ${transactions.length} of ${allTransactions.length} transactions. Edit button available for transactions older than ${SYNC_DAYS} days or manual transactions.
     </p>`;
+
+  wrap.querySelectorAll('[data-category-reason]').forEach(button => {
+    button.addEventListener('click', () => showCategoryReason(button.dataset.categoryReason));
+  });
   
+
   // Calculate and display total net summary
   const totalNet = transactions.reduce((sum, t) => sum + (t.Amount || 0), 0);
   const summaryDiv = document.getElementById('total-net-summary');
@@ -640,6 +660,99 @@ function renderTable(transactions) {
   }
   
   updateActiveFiltersDisplay();
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[char]));
+}
+
+function addCategoryReasonLine(container, label, value) {
+  const line = document.createElement('p');
+  const labelElement = document.createElement('strong');
+  labelElement.className = 'text-slate-100';
+  labelElement.textContent = `${label}: `;
+  line.append(labelElement, document.createTextNode(value || 'None'));
+  container.appendChild(line);
+}
+
+async function showCategoryReason(transactionId) {
+  categoryReasonTransactionId = transactionId;
+  const modal = document.getElementById('category-reason-modal');
+  const content = document.getElementById('category-reason-content');
+  const applyButton = document.getElementById('apply-current-rule-category-btn');
+  content.replaceChildren();
+  applyButton.classList.add('hidden');
+  const loading = document.createElement('p');
+  loading.textContent = 'Loading category details...';
+  content.appendChild(loading);
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+
+  try {
+    const response = await fetch(`/api/transactions/${encodeURIComponent(transactionId)}/category-explanation`);
+    const data = await response.json();
+    if (!response.ok || !data.success) throw new Error(data.error || 'Could not load category details');
+
+    content.replaceChildren();
+    addCategoryReasonLine(content, 'Currently shown as', data.current_category || 'Uncategorized');
+    addCategoryReasonLine(content, 'Category source', data.category_source);
+    if (data.stored_user_category) {
+      const note = document.createElement('p');
+      note.className = 'text-xs text-slate-400';
+      note.textContent = 'The database keeps this saved category across syncs. It does not record whether it was entered manually or saved by an earlier rule run.';
+      content.appendChild(note);
+    }
+
+    const rule = data.matched_rule;
+    if (rule) {
+      addCategoryReasonLine(content, 'First matching rule', `Rule ${rule.order}: ${rule.match_type} ${rule.match_field} ${rule.pattern}`);
+      addCategoryReasonLine(content, 'That rule assigns', rule.user_category || (rule.exclude ? 'Excluded (no category change)' : 'No category change'));
+      addCategoryReasonLine(content, 'Category if current rules are applied', data.current_rule_category || 'Uncategorized');
+      if (rule.user_category && rule.user_category !== data.current_category && !rule.exclude) {
+        applyButton.textContent = `Set category to ${rule.user_category}`;
+        applyButton.classList.remove('hidden');
+      }
+    } else {
+      addCategoryReasonLine(content, 'Current rules', 'No category rule matches this transaction');
+      addCategoryReasonLine(content, 'Plaid primary category', data.plaid_category_primary);
+      addCategoryReasonLine(content, 'Plaid detailed category', data.plaid_category);
+    }
+  } catch (error) {
+    content.replaceChildren();
+    const message = document.createElement('p');
+    message.className = 'text-red-300';
+    message.textContent = error.message;
+    content.appendChild(message);
+  }
+}
+
+function closeCategoryReason() {
+  const modal = document.getElementById('category-reason-modal');
+  modal.classList.add('hidden');
+  modal.classList.remove('flex');
+}
+
+async function applyCurrentRuleCategory() {
+  if (!categoryReasonTransactionId) return;
+  const button = document.getElementById('apply-current-rule-category-btn');
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/transactions/${encodeURIComponent(categoryReasonTransactionId)}/apply-matching-rule-category`, { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok || !data.success) throw new Error(data.error || 'Could not update category');
+    closeCategoryReason();
+    await loadTransactions();
+  } catch (error) {
+    const content = document.getElementById('category-reason-content');
+    const message = document.createElement('p');
+    message.className = 'text-red-300';
+    message.textContent = error.message;
+    content.appendChild(message);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function cycleSort(column) {
@@ -1366,6 +1479,23 @@ function updateCreateRulePreview() {
   }
 }
 
+function finishRuleCreation(statusDiv, data, successMessage) {
+  const analysis = data.analysis || {};
+  if (analysis.error) {
+    statusDiv.textContent = `Rule saved, but transaction reanalysis failed: ${analysis.error}`;
+    statusDiv.classList.remove('hidden', 'text-emerald-400');
+    statusDiv.classList.add('text-red-400');
+    loadTransactions();
+    return;
+  }
+
+  statusDiv.textContent = `${successMessage} Reanalyzed ${analysis.matched_count || 0} matching transactions; updated ${analysis.category_updated_count || 0} categories.`;
+  statusDiv.classList.remove('hidden', 'text-red-400');
+  statusDiv.classList.add('text-emerald-400');
+  loadTransactions();
+  setTimeout(() => closeCreateRuleModal(), 1500);
+}
+
 function applyCreateRule() {
   const statusDiv = document.getElementById('create-rule-status');
 
@@ -1390,11 +1520,7 @@ function applyCreateRule() {
   .then(response => response.json())
   .then(async (data) => {
     if (data.success) {
-      statusDiv.textContent = 'Rule created successfully!';
-      statusDiv.classList.remove('hidden');
-      statusDiv.classList.remove('text-red-400');
-      statusDiv.classList.add('text-emerald-400');
-      setTimeout(() => { closeCreateRuleModal(); }, 1500);
+      finishRuleCreation(statusDiv, data, 'Rule created successfully.');
       return;
     }
 
@@ -1421,7 +1547,7 @@ function applyCreateRule() {
             // re-send with insertion
             const resp = await fetch('/api/rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ruleData) });
             const jr = await resp.json();
-            if (jr.success) { statusDiv.textContent = 'Rule created and inserted successfully!'; statusDiv.classList.remove('hidden'); statusDiv.classList.add('text-emerald-400'); setTimeout(() => closeCreateRuleModal(), 1500); }
+            if (jr.success) { finishRuleCreation(statusDiv, jr, 'Rule created and inserted successfully.'); }
             else { alert('Failed to insert rule: ' + (jr.error || 'Unknown')); }
             return;
           }
@@ -1431,7 +1557,7 @@ function applyCreateRule() {
             ruleData.force = true;
             const resp2 = await fetch('/api/rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ruleData) });
             const jr2 = await resp2.json();
-            if (jr2.success) { statusDiv.textContent = 'Rule created (forced).'; statusDiv.classList.remove('hidden'); statusDiv.classList.add('text-emerald-400'); setTimeout(() => closeCreateRuleModal(), 1500); }
+            if (jr2.success) { finishRuleCreation(statusDiv, jr2, 'Rule created.'); }
             else { alert('Failed to create rule: ' + (jr2.error || 'Unknown')); }
             return;
           }
@@ -1449,7 +1575,7 @@ function applyCreateRule() {
           ruleData.force = true;
           const resp3 = await fetch('/api/rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ruleData) });
           const jr3 = await resp3.json();
-          if (jr3.success) { statusDiv.textContent = 'Rule created (forced).'; statusDiv.classList.remove('hidden'); statusDiv.classList.add('text-emerald-400'); setTimeout(() => closeCreateRuleModal(), 1500); }
+          if (jr3.success) { finishRuleCreation(statusDiv, jr3, 'Rule created.'); }
           else { alert('Failed to create rule: ' + (jr3.error || 'Unknown')); }
           return;
         }

@@ -19,55 +19,73 @@
   <section class="bg-surface rounded-xl border border-slate-700">
     <div class="px-6 py-4 border-b border-slate-700">
       <h2 class="font-semibold text-slate-100" id="form-title">Add Rule</h2>
-      <p class="text-xs text-slate-500 mt-1">Compound rules use fields joined by "and" and pattern parts joined by "|".</p>
+      <p class="text-xs text-slate-500 mt-1">Set what a transaction must match, then choose what to change on matching transactions.</p>
     </div>
     <form id="rule-form" class="p-6 space-y-5">
       <input type="hidden" id="rule-id">
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <section class="space-y-4">
         <div>
-          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Match Type</label>
-          <select id="match_type" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
-            <option value="contains">Contains</option>
-            <option value="exact">Exact</option>
-          </select>
+          <h3 class="text-sm font-semibold text-slate-100">1. What should match?</h3>
+          <p class="text-xs text-slate-400 mt-1">Choose the transaction field and the value it must contain or match exactly.</p>
         </div>
-        <div>
-          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Match Field</label>
-          <select id="match_field" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
-            <option value="any">Merchant, description, or account</option>
-            <option value="merchant">Merchant</option>
-            <option value="description">Description</option>
-            <option value="account">Account</option>
-            <option value="institution">Institution</option>
-            <option value="amount">Amount</option>
-            <option value="date">Date</option>
-            <option value="account and merchant">Account and merchant</option>
-            <option value="account and merchant and amount">Account, merchant, and amount</option>
-            <option value="account and merchant and date">Account, merchant, and date</option>
-            <option value="plaid_category">Plaid category</option>
-            <option value="plaid_category_primary">Plaid primary category</option>
-          </select>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div>
+            <label class="block text-xs text-slate-400 mb-1" for="match_type">Match method</label>
+            <select id="match_type" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+              <option value="contains">Contains</option>
+              <option value="exact">Matches exactly</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1" for="match_field">Transaction field</label>
+            <select id="match_field" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+              <option value="any">Merchant, description, or account</option>
+              <option value="merchant">Merchant</option>
+              <option value="description">Description</option>
+              <option value="account">Account</option>
+              <option value="institution">Institution</option>
+              <option value="amount">Amount</option>
+              <option value="date">Date</option>
+              <option value="account and merchant">Account and merchant</option>
+              <option value="account and merchant and amount">Account, merchant, and amount</option>
+              <option value="account and merchant and date">Account, merchant, and date</option>
+              <option value="plaid_category">Plaid category</option>
+              <option value="plaid_category_primary">Plaid primary category</option>
+            </select>
+          </div>
+          <div class="md:col-span-2">
+            <label class="block text-xs text-slate-400 mb-1" for="pattern">Value to match</label>
+            <input id="pattern" type="text" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="Amazon or Checking|Publix|<=-2000">
+            <p class="text-xs text-slate-500 mt-1">For multiple values, separate them with |. Compound fields match in order.</p>
+          </div>
         </div>
-        <div class="md:col-span-2">
-          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Pattern</label>
-          <input id="pattern" type="text" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="Amazon or Checking|Publix|<=-2000">
-        </div>
-      </div>
+      </section>
 
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <section class="space-y-4 border-t border-slate-700 pt-5">
         <div>
-          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Category</label>
-          <input id="user_category" type="text" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="Groceries">
+          <h3 class="text-sm font-semibold text-slate-100">2. What should change?</h3>
+          <p class="text-xs text-slate-400 mt-1">These actions apply only to transactions that match the criteria above.</p>
         </div>
-        <div>
-          <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1">Normalized Merchant</label>
-          <input id="normalized_merchant" type="text" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="Optional">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <label class="block text-xs text-slate-400 mb-1" for="user_category">Change category to</label>
+            <select id="user_category" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500">
+              <option value="">No category change</option>
+              {% for category in categories %}
+              <option value="{{ category }}">{{ category }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1" for="normalized_merchant">Change merchant name to</label>
+            <input id="normalized_merchant" type="text" class="w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500" placeholder="Leave blank to keep current merchant">
+          </div>
+          <label class="flex items-center gap-3 mt-6 text-sm text-slate-300">
+            <input id="exclude" type="checkbox" class="h-4 w-4 rounded border-slate-600 bg-base text-sky-500 focus:ring-sky-500">
+            Exclude matching transactions
+          </label>
         </div>
-        <label class="flex items-center gap-3 mt-6 text-sm text-slate-300">
-          <input id="exclude" type="checkbox" class="h-4 w-4 rounded border-slate-600 bg-base text-sky-500 focus:ring-sky-500">
-          Exclude matching transactions
-        </label>
-      </div>
+      </section>
 
       <div class="flex flex-wrap justify-end gap-3 pt-2">
         <button type="button" id="cancel-edit-btn" class="hidden px-4 py-2 rounded-lg text-sm font-medium text-slate-300 hover:text-slate-100 transition-colors">Cancel Edit</button>
@@ -123,6 +141,54 @@ function showStatus(type, message) {
   box.className = `rounded-lg border px-4 py-3 text-sm ${styles[type] || styles.info}`;
   box.textContent = message;
   box.classList.remove('hidden');
+}
+
+function showOvershadowingRules(rule, diagnostics) {
+  const box = document.getElementById('rules-status');
+  const conflicts = diagnostics.overshadowing_rules || [];
+  box.className = 'rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200';
+  box.innerHTML = `
+    <p class="font-semibold">The new rule is fully shadowed. These earlier rules also match its ${Number(diagnostics.matched_count) || 0} transaction(s); the first matching rule takes effect.</p>
+    <ol class="mt-2 space-y-2 list-decimal list-inside">
+      ${conflicts.map(item => `
+        <li>
+          <span class="text-slate-100">Rule ${Number(item.order)}</span>:
+          <span>${item.match_type === 'exact' ? 'Exact match on' : 'Contains match on'} ${escapeHtml(item.match_field)}:</span>
+          <code class="text-amber-100">${escapeHtml(item.pattern)}</code>
+          <span>(${Number(item.matched_count)} transaction(s)); changes category to ${escapeHtml(item.user_category || 'no category')}</span>
+          ${item.normalized_merchant ? `<span> and merchant to ${escapeHtml(item.normalized_merchant)}</span>` : ''}
+          ${String(item.exclude).toLowerCase() === 'true' ? '<span>; excludes transactions</span>' : ''}
+        </li>
+      `).join('')}
+    </ol>
+    <div class="mt-3 flex flex-wrap items-center gap-3">
+      <button type="button" id="insert-above-conflicts-btn" class="rounded bg-amber-300 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-amber-200">Add new rule above these rules</button>
+      <span class="text-xs text-amber-100/80">The new rule will take priority for transactions it matches.</span>
+    </div>`;
+  box.classList.remove('hidden');
+  document.getElementById('insert-above-conflicts-btn').addEventListener('click', async () => {
+    const insertBeforeId = Number(diagnostics.suggest_insert_before);
+    try {
+      const response = await fetch('/api/rules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...rule, insert_before_id: insertBeforeId })
+      });
+      const data = await response.json();
+      if (!data.success) {
+        if (data.diagnostics?.overshadowing_rules) {
+          showOvershadowingRules(rule, data.diagnostics);
+          return;
+        }
+        throw new Error(data.error || 'Could not insert rule');
+      }
+      showStatus('success', 'Rule added above the earlier matching rules.');
+      resetForm();
+      loadRules();
+    } catch (error) {
+      showStatus('error', error.message);
+    }
+  });
 }
 
 function ruleFromForm() {
@@ -218,8 +284,24 @@ async function saveRule(event) {
       body: JSON.stringify(rule)
     });
     const data = await response.json();
-    if (!data.success) throw new Error(data.error || 'Could not save rule');
-    showStatus('success', editing ? 'Rule updated.' : 'Rule added.');
+    if (!data.success) {
+      if (data.diagnostics?.overshadowing_rules) {
+        showOvershadowingRules(rule, data.diagnostics);
+        return;
+      }
+      throw new Error(data.error || 'Could not save rule');
+    }
+    const analysis = data.analysis;
+    if (!editing && analysis?.error) {
+      showStatus('error', `Rule added, but transaction reanalysis failed: ${analysis.error}`);
+    } else if (!editing && analysis) {
+      showStatus(
+        'success',
+        `Rule added. Reanalyzed ${analysis.matched_count || 0} matching transactions; updated ${analysis.category_updated_count || 0} categories.`
+      );
+    } else {
+      showStatus('success', editing ? 'Rule updated.' : 'Rule added.');
+    }
     resetForm();
     loadRules();
   } catch (error) {

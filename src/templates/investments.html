@@ -18,43 +18,10 @@
   </div>
 
   <div class="bg-surface rounded-xl border border-slate-700">
-    <div class="px-6 py-4 border-b border-slate-700">
-      <h2 class="font-semibold text-slate-100">Add Acquisition Basis</h2>
-      <p class="text-xs text-slate-500 mt-1">Add missing shares, or explicitly replace imported basis for a position.</p>
-    </div>
-    <form id="basis-form" class="p-6 grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3 items-end">
-      <label class="text-xs text-slate-400">Holding
-        <select id="basis-holding" required class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100"></select>
-      </label>
-      <label class="text-xs text-slate-400">Quantity covered
-        <input id="basis-quantity" type="number" min="0.000001" step="0.000001" required class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100">
-      </label>
-      <label class="text-xs text-slate-400">Total paid
-        <input id="basis-cost" type="number" min="0" step="0.01" required class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100">
-      </label>
-      <label class="text-xs text-slate-400">Purchase date
-        <input id="basis-date" type="date" class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100">
-      </label>
-      <label class="text-xs text-slate-400">Entry type
-        <select id="basis-mode" class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100">
-          <option value="supplement">Supplement missing shares</option>
-          <option value="override">Override imported basis</option>
-        </select>
-      </label>
-      <button class="px-4 py-2 bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium rounded-lg">Save basis</button>
-      <label class="text-xs text-slate-400 md:col-span-2 xl:col-span-6">Notes
-        <input id="basis-notes" type="text" placeholder="Optional note about this purchase or correction" class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100">
-      </label>
-    </form>
-    <div id="basis-message" class="px-6 pb-4 text-xs hidden"></div>
-    <div id="basis-entries" class="px-6 pb-5"></div>
-  </div>
-
-  <div class="bg-surface rounded-xl border border-slate-700">
     <div class="px-6 py-4 border-b border-slate-700 flex flex-wrap gap-2">
       <button class="investment-tab active-tab" data-tab="holdings">Current Holdings</button>
       <button class="investment-tab" data-tab="activity">Investment Activity</button>
-      <button class="investment-tab" data-tab="history">Portfolio History</button>
+      <button class="investment-tab" data-tab="history">Account Value History</button>
     </div>
 
     <div id="holdings-panel" class="investment-panel">
@@ -90,9 +57,55 @@
         <canvas id="investment-history-chart" height="90"></canvas>
       </div>
       <div class="table-scroll border-t border-slate-700">
+        <p class="px-4 pt-4 text-xs text-slate-500">Investment account balances by snapshot date; manual account values carry forward until updated.</p>
         <div id="history-table" class="p-4"></div>
       </div>
     </div>
+  </div>
+
+  <div class="bg-surface rounded-xl border border-slate-700">
+    <div class="px-6 py-4 border-b border-slate-700 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <h2 class="font-semibold text-slate-100">Account Balance Reconciliation</h2>
+        <p class="text-xs text-slate-500 mt-1">Portfolio value uses the same latest-per-account balances as Net Worth. Detailed positions may not cover all account value.</p>
+      </div>
+      <button id="toggle-basis-btn" type="button" aria-expanded="false" aria-controls="basis-panel" class="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-slate-600 bg-slate-700 hover:bg-slate-600 text-sm font-medium text-slate-100">
+        <span id="toggle-basis-icon" aria-hidden="true">+</span>
+        <span id="toggle-basis-label">Add Acquisition Basis</span>
+      </button>
+    </div>
+    <div id="basis-panel" class="hidden border-b border-slate-700">
+      <div class="px-6 pt-4">
+        <p class="text-xs text-slate-500">Add missing shares, or explicitly replace imported basis for a position.</p>
+      </div>
+      <form id="basis-form" class="p-6 grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3 items-end">
+        <label class="text-xs text-slate-400">Holding
+          <select id="basis-holding" required class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100"></select>
+        </label>
+        <label class="text-xs text-slate-400">Quantity covered
+          <input id="basis-quantity" type="number" min="0.000001" step="0.000001" required class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100">
+        </label>
+        <label class="text-xs text-slate-400">Total paid
+          <input id="basis-cost" type="number" min="0" step="0.01" required class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100">
+        </label>
+        <label class="text-xs text-slate-400">Purchase date
+          <input id="basis-date" type="date" class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100">
+        </label>
+        <label class="text-xs text-slate-400">Entry type
+          <select id="basis-mode" class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100">
+            <option value="supplement">Supplement missing shares</option>
+            <option value="override">Override imported basis</option>
+          </select>
+        </label>
+        <button class="px-4 py-2 bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium rounded-lg">Save basis</button>
+        <label class="text-xs text-slate-400 md:col-span-2 xl:col-span-6">Notes
+          <input id="basis-notes" type="text" placeholder="Optional note about this purchase or correction" class="mt-1 w-full bg-base border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100">
+        </label>
+      </form>
+      <div id="basis-message" class="px-6 pb-4 text-xs hidden"></div>
+      <div id="basis-entries" class="px-6 pb-5"></div>
+    </div>
+    <div id="investment-account-reconciliation" class="p-4 table-scroll"></div>
   </div>
 </div>
 {% endblock %}
@@ -154,15 +167,54 @@ function amount(v, positiveIsGood = false) {
 function renderCards(s) {
   const gainClass = number(s.gain_loss) >= 0 ? 'text-emerald-400' : 'text-red-400';
   document.getElementById('investment-cards').innerHTML = [
-    ['Portfolio Value', fmtAmt(s.current_value), 'text-violet-400'],
-    ['Cost Basis', fmtAmt(s.cost_basis), 'text-slate-100'],
-    ['Gain / Loss', amount(s.gain_loss, true), gainClass],
-    ['Holdings', `${s.holding_count} <span class="text-xs text-slate-500 font-normal">across ${s.account_count} account${s.account_count === 1 ? '' : 's'}</span>`, 'text-sky-400']
+    ['Portfolio Value', fmtAmt(s.current_value), 'text-violet-400', 'Latest balance across all investment accounts'],
+    ['Detailed Positions', fmtAmt(s.holdings_value), 'text-slate-100', `${s.holding_count} positions across ${s.holding_account_count} of ${s.account_count} accounts`],
+    ['Known Cost Basis', fmtAmt(s.cost_basis), 'text-slate-100', `Basis coverage: ${s.basis_coverage_percent.toFixed(2)}% of detailed position value`],
+    ['Known Unrealized Gain / Loss', amount(s.gain_loss, true), gainClass, `On known-basis positions only · ${s.gain_loss_percent == null ? 'return unavailable' : `${s.gain_loss_percent.toFixed(2)}% unrealized return`}`]
   ].map(c => `<div class="bg-surface rounded-xl p-5 border border-slate-700">
     <p class="text-xs text-slate-500 uppercase tracking-wider mb-2">${c[0]}</p>
     <p class="text-2xl font-bold ${c[2]}">${c[1]}</p>
-    ${c[0] === 'Gain / Loss' && s.gain_loss_percent != null ? `<p class="text-xs text-slate-500 mt-1">${s.gain_loss_percent.toFixed(2)}% return</p>` : ''}
+    <p class="text-xs text-slate-500 mt-2">${c[3]}</p>
   </div>`).join('');
+}
+
+function renderAccountReconciliation(accounts, summary) {
+  const sorted = [...accounts].sort((a, b) => String(a.account_name).localeCompare(String(b.account_name)));
+  const today = new Date();
+  const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+  const rows = sorted.map((account, index) => {
+    const snapshotDay = account.snapshot_date ? Date.parse(`${account.snapshot_date}T00:00:00Z`) : NaN;
+    const ageDays = Number.isFinite(snapshotDay) ? Math.floor((todayUtc - snapshotDay) / 86400000) : null;
+    const stale = ageDays !== null && ageDays > 14;
+    return `<tr>
+    <td class="${index % 2 ? 'bg-surface' : 'bg-base'} px-4 py-2 text-sm text-slate-200">${safe(account.account_name)}</td>
+    <td class="${index % 2 ? 'bg-surface' : 'bg-base'} px-4 py-2 text-xs text-slate-400">${safe(account.institution)}</td>
+    <td class="${index % 2 ? 'bg-surface' : 'bg-base'} px-4 py-2 text-right text-sm text-slate-100">${fmtAmt(account.account_value)}</td>
+    <td class="${index % 2 ? 'bg-surface' : 'bg-base'} px-4 py-2 text-right text-sm text-slate-300">${fmtAmt(account.holdings_value)}</td>
+    <td class="${index % 2 ? 'bg-surface' : 'bg-base'} px-4 py-2 text-right text-sm ${number(account.unitemized_value) < 0 ? 'text-amber-300' : 'text-slate-300'}">${fmtAmt(account.unitemized_value)}</td>
+    <td class="${index % 2 ? 'bg-surface' : 'bg-base'} px-4 py-2 text-right text-xs ${stale ? 'text-amber-300' : 'text-slate-500'}">${safe(account.snapshot_date)}${stale ? ' · Stale' : ''}</td>
+  </tr>`;
+  }).join('');
+  document.getElementById('investment-account-reconciliation').innerHTML = `
+    <table class="w-full text-xs border-collapse">
+      <thead><tr>
+        <th class="text-left text-xs text-slate-400 px-4 py-2 font-medium border-b border-slate-700">Account</th>
+        <th class="text-left text-xs text-slate-400 px-4 py-2 font-medium border-b border-slate-700">Institution</th>
+        <th class="text-right text-xs text-slate-400 px-4 py-2 font-medium border-b border-slate-700">Account Balance</th>
+        <th class="text-right text-xs text-slate-400 px-4 py-2 font-medium border-b border-slate-700">Detailed Positions</th>
+        <th class="text-right text-xs text-slate-400 px-4 py-2 font-medium border-b border-slate-700">Balance Not Itemized</th>
+        <th class="text-right text-xs text-slate-400 px-4 py-2 font-medium border-b border-slate-700">Balance Date</th>
+      </tr></thead>
+      <tbody>${rows}
+        <tr class="border-t border-slate-600 font-semibold">
+          <td class="px-4 py-3 text-slate-100" colspan="2">Total</td>
+          <td class="px-4 py-3 text-right text-slate-100">${fmtAmt(summary.current_value)}</td>
+          <td class="px-4 py-3 text-right text-slate-100">${fmtAmt(summary.holdings_value)}</td>
+          <td class="px-4 py-3 text-right text-slate-100">${fmtAmt(summary.unitemized_value)}</td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>`;
 }
 
 function populateBasisControls() {
@@ -251,14 +303,31 @@ function renderHistory() {
     document.getElementById('history-table').innerHTML = '<p class="text-sm text-slate-500 p-2">No holdings history available.</p>';
     return;
   }
+  const chronological = [...history].sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date));
   document.getElementById('history-table').innerHTML = `<table class="w-full text-xs border-collapse">
-    <thead><tr><th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 border-b border-slate-700">Snapshot Date</th><th class="bg-surface text-right text-xs text-slate-400 px-4 py-2.5 border-b border-slate-700">Portfolio Value</th><th class="bg-surface text-right text-xs text-slate-400 px-4 py-2.5 border-b border-slate-700">Cost Basis</th><th class="bg-surface text-right text-xs text-slate-400 px-4 py-2.5 border-b border-slate-700">Gain / Loss</th></tr></thead>
-    <tbody>${[...history].reverse().map((h,i) => `<tr><td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-slate-300">${safe(h.snapshot_date)}</td><td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right">${amount(h.current_value)}</td><td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right">${amount(h.cost_basis)}</td><td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right">${amount(h.gain_loss,true)}</td></tr>`).join('')}</tbody>
+    <thead><tr><th class="bg-surface text-left text-xs text-slate-400 px-4 py-2.5 border-b border-slate-700">Snapshot Date</th><th class="bg-surface text-right text-xs text-slate-400 px-4 py-2.5 border-b border-slate-700">Investment Account Value</th><th class="bg-surface text-right text-xs text-slate-400 px-4 py-2.5 border-b border-slate-700">Change Since Previous Snapshot</th></tr></thead>
+    <tbody>${chronological.reverse().map((h,i) => {
+      const previous = chronological[i + 1];
+      const change = previous ? h.current_value - previous.current_value : null;
+      return `<tr><td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-slate-300">${safe(h.snapshot_date)}</td><td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right">${amount(h.current_value)}</td><td class="${i%2?'bg-surface':'bg-base'} px-4 py-2 text-right">${change == null ? '—' : amount(change,true)}</td></tr>`;
+    }).join('')}</tbody>
   </table>`;
   if (investmentHistoryChart) investmentHistoryChart.destroy();
+  const sortedHistory = [...history].sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date));
+  const toDayNumber = dateString => {
+    const [year, month, day] = dateString.split('-').map(Number);
+    return Date.UTC(year, month - 1, day) / 86400000;
+  };
+  const firstDay = toDayNumber(sortedHistory[0].snapshot_date);
+  const points = sortedHistory.map(item => ({
+    x: toDayNumber(item.snapshot_date) - firstDay,
+    y: item.current_value,
+    snapshot_date: item.snapshot_date
+  }));
+  const lastDay = points[points.length - 1].x;
   investmentHistoryChart = new Chart(document.getElementById('investment-history-chart'), {
-    type:'line', data:{labels:history.map(h=>h.snapshot_date), datasets:[{label:'Portfolio Value',data:history.map(h=>h.current_value),borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.12)',fill:true,tension:.35,pointRadius:2}]},
-    options:{responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmtAmt(c.raw)}}},scales:{x:{grid:{color:'#1e293b'},ticks:{maxTicksLimit:10}},y:{grid:{color:'#334155'},ticks:{callback:v=>fmtK(v)}}}}
+    type:'line', data:{datasets:[{label:'Portfolio Value',data:points,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.12)',fill:true,tension:.35,pointRadius:2}]},
+    options:{responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{title:items=>items[0].raw.snapshot_date,label:context=>fmtAmt(context.parsed.y)}}},scales:{x:{type:'linear',min:0,max:lastDay,grid:{color:'#1e293b'},ticks:{maxTicksLimit:10,maxRotation:45,minRotation:45,callback:value=>new Date((firstDay+Math.round(value))*86400000).toISOString().slice(0,10)}},y:{grid:{color:'#334155'},ticks:{callback:value=>fmtK(value)}}}}
   });
 }
 
@@ -273,7 +342,7 @@ function resetActivity() { document.getElementById('activity-search').value=''; 
 fetch('/api/investments').then(r=>r.json()).then(data => {
   if (data.error) throw new Error(data.error);
   investmentData = data;
-  renderCards(data.summary); populateBasisControls();
+  renderCards(data.summary); renderAccountReconciliation(data.accounts, data.summary); populateBasisControls();
   [...new Set(data.accounts.map(a=>a.account_id))].forEach(id => {
     const a = data.accounts.find(x=>x.account_id===id);
     document.getElementById('holding-account').innerHTML += `<option value="${safe(id)}">${safe(a.account_name || id)}</option>`;
@@ -292,6 +361,15 @@ document.getElementById('holding-reset').addEventListener('click', resetHoldings
 document.getElementById('activity-search').addEventListener('input', renderActivity);
 document.getElementById('activity-type').addEventListener('change', renderActivity);
 document.getElementById('activity-reset').addEventListener('click', resetActivity);
+document.getElementById('toggle-basis-btn').addEventListener('click', () => {
+  const button = document.getElementById('toggle-basis-btn');
+  const panel = document.getElementById('basis-panel');
+  const expanded = button.getAttribute('aria-expanded') === 'true';
+  button.setAttribute('aria-expanded', String(!expanded));
+  panel.classList.toggle('hidden', expanded);
+  document.getElementById('toggle-basis-icon').textContent = expanded ? '+' : '−';
+  document.getElementById('toggle-basis-label').textContent = expanded ? 'Add Acquisition Basis' : 'Hide Acquisition Basis';
+});
 document.getElementById('basis-form').addEventListener('submit', e => {
   e.preventDefault();
   const h = investmentData.holdings[document.getElementById('basis-holding').value];
